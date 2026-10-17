@@ -22,10 +22,10 @@ async function main() {
   console.log("SMTP connection successful!");
 
   await transporter.sendMail({
-    from: `"SatQuery AI" <${user}>`,
+    from: `"Bhu-Drishti" <${user}>`,
     to: user,
-    subject: "SatQuery AI - Email Test",
-    text: "Success! Your SatQuery AI project can send emails.",
+    subject: "Bhu-Drishti - Email Test",
+    text: "Success! Your Bhu-Drishti project can send emails.",
   });
 
   console.log("Test email sent. Check your inbox.");

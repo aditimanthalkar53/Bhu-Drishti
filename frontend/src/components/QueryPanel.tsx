@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { CompileInfo, Plan, Region, Session } from "../types";
 import { precisionLabel, targetLabel, taskLabel } from "../format";
+import { RegionPicker } from "./RegionPicker";
 
+/** Examples for the simulated demo districts (fixed 2017–2025 archive). */
 export const EXAMPLES: { label: string; question: string }[] = [
   { label: "Flood share", question: "What percentage of cropland was flooded during 1-15 July 2023?" },
   { label: "Flooded area", question: "How many km² of cropland were flooded during 1-15 August 2022?" },
@@ -9,6 +11,16 @@ export const EXAMPLES: { label: string; question: string }[] = [
   { label: "Kiln count", question: "How many brick kilns are there in 2024?" },
   { label: "Find kilns", question: "Find all brick kilns in 2024 with recall 90%" },
   { label: "Inspect a spot", question: "Is there flooding near 26.42, 91.05 in July 2022?" },
+];
+
+/** Examples for real districts (live Sentinel / NASA data). */
+export const LIVE_EXAMPLES: { label: string; question: string }[] = [
+  { label: "Recent flooding", question: "What percentage of cropland was flooded in the last 14 days?" },
+  { label: "Past flood event", question: "What percentage of cropland was flooded during 1-15 July 2024, within 5 pp?" },
+  { label: "Fires (10 days)", question: "How many fire detections were there in the last 10 days?" },
+  { label: "Fire hotspots", question: "Identify areas with recent fire detections and prioritize them for review" },
+  { label: "Burned cropland", question: "How much cropland was burned between 15 October 2025 and 15 November 2025, within 25%?" },
+  { label: "New construction", question: "How much new built-up area appeared between 2020 and 2025, within 25%?" },
 ];
 
 interface Props {
@@ -38,6 +50,8 @@ export function QueryPanel(p: Props) {
   const [showHistory, setShowHistory] = useState(false);
   const ir = p.preview?.compile.ir;
   const blocking = p.preview?.plan.checks.filter((c) => c.blocking && !c.ok) ?? [];
+  const region = p.regions.find((r) => r.id === p.regionId);
+  const examples = region && !region.simulated ? LIVE_EXAMPLES : EXAMPLES;
 
   return (
     <aside className="pane pane-query" aria-label="Ask a question">
@@ -52,8 +66,8 @@ export function QueryPanel(p: Props) {
           <rect x="13" y="13" width="6" height="6" fill="var(--water)" /><rect x="20" y="20" width="6" height="6" fill="var(--water)" />
         </svg>
         <div>
-          <h1>SatQuery AI</h1>
-          <p className="muted small">Answers that tighten as the engine works</p>
+          <h1>Explore</h1>
+          <p className="muted small">Ask about any district in India — answers tighten as the engine works</p>
         </div>
       </header>
 
@@ -64,14 +78,7 @@ export function QueryPanel(p: Props) {
           p.onRun();
         }}
       >
-        <label className="field">
-          <span>Region</span>
-          <select value={p.regionId} onChange={(e) => p.onRegion(e.target.value)} disabled={p.running}>
-            {p.regions.map((r) => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </select>
-        </label>
+        <RegionPicker regions={p.regions} value={p.regionId} onChange={p.onRegion} disabled={p.running} />
 
         <label className="field">
           <span>Question</span>
@@ -85,7 +92,7 @@ export function QueryPanel(p: Props) {
         </label>
 
         <div className="examples" role="group" aria-label="Example questions">
-          {EXAMPLES.map((ex) => (
+          {examples.map((ex) => (
             <button type="button" key={ex.label} className="chip" disabled={p.running}
               onClick={() => p.onQuestion(ex.question)} aria-pressed={p.question === ex.question}>
               {ex.label}
@@ -102,7 +109,7 @@ export function QueryPanel(p: Props) {
           <label className="field">
             <span>Time budget (s)</span>
             <input inputMode="numeric" value={p.budget} onChange={(e) => p.onBudget(e.target.value)}
-              placeholder="120" disabled={p.running} />
+              placeholder={region && !region.simulated ? "900" : "120"} disabled={p.running} />
           </label>
         </div>
         <p id="precision-help" className="muted small">
@@ -154,6 +161,9 @@ export function QueryPanel(p: Props) {
               </li>
             ))}
           </ul>
+          {p.preview.compile.warnings?.length > 0 && (
+            <ul className="assumptions">{p.preview.compile.warnings.map((w) => <li key={w} className="warn-text">{w}</li>)}</ul>
+          )}
           {p.preview.plan.steps.length > 0 && (
             <>
               <h3>Execution plan</h3>

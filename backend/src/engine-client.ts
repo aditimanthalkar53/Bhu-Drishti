@@ -1,4 +1,5 @@
-const ENGINE_TIMEOUT_MS = 30_000;
+// Live-data validation queries satellite catalogues before a run starts, so allow more than a few seconds.
+const ENGINE_TIMEOUT_MS = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
 
 /** Thin client for the Python AEQE engine. */
 export class EngineError extends Error {
@@ -10,10 +11,10 @@ export class EngineError extends Error {
 export class EngineClient {
   constructor(private base: string) {}
 
-  async json<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+  async json<T = unknown>(path: string, init: RequestInit = {}, timeoutMs = ENGINE_TIMEOUT_MS): Promise<T> {
     let res: Response;
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), ENGINE_TIMEOUT_MS);
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
     try {
       res = await fetch(this.base + path, {
         ...init,
@@ -27,7 +28,12 @@ export class EngineClient {
       clearTimeout(timer);
     }
     const text = await res.text();
-    const body = text ? JSON.parse(text) : null;
+    let body: unknown = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = { detail: text.slice(0, 300) };
+    }
     if (!res.ok) throw new EngineError(res.status, body);
     return body as T;
   }

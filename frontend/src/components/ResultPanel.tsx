@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { api, post, traceUrl } from "../api";
+import { useNavigate } from "react-router-dom";
+import { api, authUrl, post, traceUrl } from "../api";
 import { useAuth } from "../auth";
 import { digitsFor, fmt, fmtInt, fmtSeconds, halfwidthPct, stopReasonLabel, unitFor } from "../format";
+import { AdvisoryView, EvidenceList, InputsList } from "./Evidence";
 import type { ExhaustiveReport, QueryIR, ReplayReport } from "../types";
 import type { RunState } from "../useQueryRun";
 import { ConvergenceChart } from "./ConvergenceChart";
@@ -25,9 +27,12 @@ export function ResultPanel({ run }: { run: RunState }) {
   const { user } = useAuth();
   const [mailTo, setMailTo] = useState(user && !user.guest ? user.email : "");
   const [mailStatus, setMailStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  const navigate = useNavigate();
 
   const ir: QueryIR | undefined = run.compile?.ir;
   const task = ir?.task;
+  const target = ir?.target;
+  const census = run.estimate?.method === "census";
   const e = run.estimate;
   const res = run.result;
   const pop = run.progress?.population ?? run.plan?.population ?? null;
@@ -42,17 +47,18 @@ export function ResultPanel({ run }: { run: RunState }) {
             seconds with a confidence interval that narrows while it keeps working. Stop it whenever the interval is good enough.
           </p>
           <ul className="how muted">
-            <li>Cheap signals (satellite embeddings, a coarse radar overview) score every tile.</li>
-            <li>Expensive specialist models run only on a statistically chosen sample.</li>
-            <li>Every step, tile and model output is recorded so the answer can be replayed.</li>
+            <li>Cheap signals (a coarse radar overview, land cover, fire detections) score every tile.</li>
+            <li>Expensive analysis of full-resolution imagery runs only on a statistically chosen sample.</li>
+            <li>Rainfall, MODIS flood maps and forecasts are attached as context — never mixed into the number.</li>
+            <li>Every step, tile, satellite scene and model output is recorded so the answer can be replayed.</li>
           </ul>
         </div>
       </aside>
     );
   }
 
-  const digits = task ? digitsFor(task) : 1;
-  const unit = task ? unitFor(task) : "";
+  const digits = census ? 0 : task ? digitsFor(task) : 1;
+  const unit = task ? unitFor(task, target) : "";
   const targetHw = ir && task === "area_fraction" ? ir.precision
     : ir && e && (task === "total" || task === "count") ? (ir.precision / 100) * Math.abs(e.value) : null;
   const running = run.status === "running";
@@ -73,7 +79,13 @@ export function ResultPanel({ run }: { run: RunState }) {
   const exportEvidence = () =>
     act("evidence", async () => {
       const fc = await api(`/api/queries/${run.id}/evidence`);
-      download(`satquery-evidence-${run.id}.geojson`, JSON.stringify(fc), "application/geo+json");
+      download(`bhu-drishti-evidence-${run.id}.geojson`, JSON.stringify(fc), "application/geo+json");
+    });
+
+  const createReport = () =>
+    act("report", async () => {
+      const r = await post<{ id: string }>("/api/reports", { queryIds: [run.id] });
+      navigate(`/app/reports/${r.id}`);
     });
 
   const emailReport = async () => {
@@ -92,7 +104,7 @@ export function ResultPanel({ run }: { run: RunState }) {
   const exportCsv = () => {
     const rows = [["tile_id", "value", "stratum", "role", "from_cache"]];
     for (const t of run.sampled.values()) rows.push([t.tile_id, String(t.value), String(t.stratum), t.role ?? "", String(t.cache)]);
-    download(`satquery-tiles-${run.id}.csv`, rows.map((r) => r.join(",")).join("\n"), "text/csv");
+    download(`bhu-drishti-tiles-${run.id}.csv`, rows.map((r) => r.join(",")).join("\n"), "text/csv");
   };
 
   const lastTiles = [...run.sampled.values()].slice(-60).reverse();
@@ -109,8 +121,9 @@ export function ResultPanel({ run }: { run: RunState }) {
           <>
             <span className="pulse" aria-hidden="true" />
             <span>
-              Analysing tiles — {fmtInt(run.progress?.n ?? 0)}
-              {pop ? ` of ${fmtInt(pop)}` : ""} so far
+              {!run.progress && run.stage ? run.stage : !run.progress && !run.plan ? "Validating inputs and starting…" : (
+                <>Analysing tiles — {fmtInt(run.progress?.n ?? 0)}{pop ? ` of ${fmtInt(pop)}` : ""} so far</>
+              )}
             </span>
           </>
         ) : run.status === "failed" ? (
@@ -138,27 +151,44 @@ export function ResultPanel({ run }: { run: RunState }) {
         </section>
       ) : (
         <section className="headline">
+          {res?.data_mode && (
+            <span className={`mode-badge ${res.data_mode === "live" ? "mode-live" : "mode-sim"}`}>
+              {res.data_mode === "live" ? "Live satellite data" : "Simulated demo data"}
+            </span>
+          )}
           <h2 className="question">{ir?.question}</h2>
           <p className="big-number">
             {e ? fmt(e.value, digits) : "…"}
             <span className="big-unit">{unit}</span>
           </p>
           <p className="ci-text">
-            {e ? (
+            {e ? (census ? (
+              <>Exact count over every tile <span className="muted">(no sampling)</span></>
+            ) : (
               <>
                 {Math.round((ir?.confidence ?? 0.95) * 100)}% interval {fmt(e.lo, digits)} – {fmt(e.hi, digits)}
                 {task && task !== "find_all" ? <span className="muted"> ({halfwidthPct(task, e)})</span> : null}
               </>
-            ) : "waiting for the first batch"}
+            )) : "waiting for the first batch"}
           </p>
+          {e?.interval_method && !census && <p className="muted small">{e.interval_method}</p>}
+          {census && e?.by_confidence && (
+            <p className="small">
+              {fmtInt(e.by_confidence.high)} high · {fmtInt(e.by_confidence.nominal)} nominal · {fmtInt(e.by_confidence.low)} low confidence
+              {e.on_cropland !== undefined && <> · {fmtInt(e.on_cropland)} on cropland</>}
+              {e.newest_detection && <span className="muted"> · newest {e.newest_detection}</span>}
+            </p>
+          )}
           {task === "find_all" && e?.recall_lower_bound !== undefined && (
             <p className="recall">
               {fmtInt(e.confirmed_positive_tiles)} tiles confirmed. Certified recall ≥ {fmt(100 * e.recall_lower_bound, 0)}%
               <span className="muted"> (target {ir?.precision}%)</span>
             </p>
           )}
-          <IntervalRibbon history={history} digits={digits} unit={unit} targetHalfwidth={targetHw}
-            clamp={task === "area_fraction" ? [0, 100] : [0, Infinity]} />
+          {!census && (
+            <IntervalRibbon history={history} digits={digits} unit={unit} targetHalfwidth={targetHw}
+              clamp={task === "area_fraction" ? [0, 100] : [0, Infinity]} />
+          )}
         </section>
       )}
 
@@ -175,8 +205,29 @@ export function ResultPanel({ run }: { run: RunState }) {
         {run.plan && <div><dt>Specialist model</dt><dd className="small">{run.plan.oracle.name} <span className="muted">({run.plan.sensor})</span></dd></div>}
       </dl>
 
-      {task !== "inspect" && (
+      {task !== "inspect" && !census && (
         <ConvergenceChart history={history} digits={digits} unit={unit} population={pop} />
+      )}
+
+      {res?.priority_tiles && res.priority_tiles.length > 0 && (
+        <section className="caveats" aria-label="Priority tiles">
+          <h3>Priority tiles for field review</h3>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Tile (lon, lat)</th><th className="num">Detections</th><th className="num">High</th><th>Last seen (UTC)</th></tr></thead>
+              <tbody>
+                {res.priority_tiles.slice(0, 15).map((t) => (
+                  <tr key={t.tile_id}>
+                    <td>{t.bbox ? `${fmt(t.bbox[0] + 0.005, 3)}, ${fmt(t.bbox[1] + 0.005, 3)}` : t.tile_id}</td>
+                    <td className="num">{fmtInt(Number(t.detections ?? 0))}</td>
+                    <td className="num">{fmtInt(Number((t as any).high ?? 0))}</td>
+                    <td>{String((t as any).last_seen ?? "–")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       {res && res.caveats.length > 0 && (
@@ -186,14 +237,24 @@ export function ResultPanel({ run }: { run: RunState }) {
         </section>
       )}
 
+      {(run.evidence || res?.supporting_evidence) && (
+        <EvidenceList items={run.evidence ?? res?.supporting_evidence ?? []} />
+      )}
+      {res?.inputs_summary && res.inputs_summary.length > 0 && <InputsList inputs={res.inputs_summary} />}
+      {res?.advisory && <AdvisoryView advisory={res.advisory} />}
+
       {res && (
         <section className="evidence">
           <h3>Evidence and checks</h3>
           <div className="btn-grid">
-            <button className="btn" disabled={!!busy} onClick={() => act("exhaustive", async () =>
-              setExhaustive(await post(`/api/queries/${run.id}/exhaustive`)))}>
-              {busy === "exhaustive" ? "Analysing every tile…" : "Compare with every tile"}
+            <button className="btn btn-accent" disabled={!!busy} onClick={createReport}>
+              {busy === "report" ? "Creating…" : "Create report for officials"}
             </button>
+            <a className="btn" href={authUrl(`/api/queries/${run.id}/report.pdf`)} download>Download PDF</a>
+            {!census && <button className="btn" disabled={!!busy} onClick={() => act("exhaustive", async () =>
+              setExhaustive(await post(`/api/queries/${run.id}/exhaustive`)))}>
+              {busy === "exhaustive" ? "Analysing every tile…" : res.data_mode === "live" ? "Compare with every tile (slow)" : "Compare with every tile"}
+            </button>}
             <button className="btn" disabled={!!busy} onClick={() => act("replay", async () =>
               setReplay(await post(`/api/queries/${run.id}/replay`)))}>
               {busy === "replay" ? "Replaying…" : "Replay and verify"}

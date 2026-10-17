@@ -1,4 +1,4 @@
-import type { EstimateView, QueryIR, Task } from "./types";
+import type { EstimateView, QueryIR, Target, Task } from "./types";
 
 export function fmt(v: number | undefined | null, digits = 1): string {
   if (v === undefined || v === null || !Number.isFinite(v)) return "–";
@@ -15,7 +15,8 @@ export function digitsFor(task: Task): number {
   return task === "count" || task === "find_all" ? 0 : 1;
 }
 
-export function unitFor(task: Task): string {
+export function unitFor(task: Task, target?: Target): string {
+  if (target === "active_fire") return task === "find_all" ? "tiles with fires" : "detections";
   switch (task) {
     case "area_fraction":
       return "% of cropland";
@@ -31,7 +32,27 @@ export function unitFor(task: Task): string {
 }
 
 export function targetLabel(ir: Pick<QueryIR, "target">): string {
-  return { flooded_cropland: "Flooded cropland", new_builtup: "New built-up area", brick_kiln: "Brick kilns" }[ir.target];
+  return {
+    flooded_cropland: "Flooded cropland", new_builtup: "New built-up area", brick_kiln: "Brick kilns",
+    active_fire: "Active-fire detections (NASA FIRMS)", burned_cropland: "Burned cropland (burn scars)",
+  }[ir.target];
+}
+
+export function fmtDate(iso: string | null | undefined, withTime = true): string {
+  if (!iso) return "–";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-IN", withTime ? { dateStyle: "medium", timeStyle: "short" } : { dateStyle: "medium" });
+}
+
+export function ago(iso: string | null | undefined): string {
+  if (!iso) return "never";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 0) return `in ${Math.round(-s / 60)} min`;
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400 * 2) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
 }
 
 export function taskLabel(task: Task): string {
@@ -66,7 +87,7 @@ export function stopReasonLabel(r: string): string {
       time_budget: "Time budget used up",
       tile_budget: "Tile budget used up",
       user_stop: "Stopped by you",
-      census: "Every tile analysed",
+      census: "Every tile counted",
       replay_complete: "Replay complete",
       exhausted: "Finished",
     } as Record<string, string>

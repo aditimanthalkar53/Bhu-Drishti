@@ -1,14 +1,14 @@
-# SatQuery AI — full stack.  docker compose up --build  →  http://localhost:8080
+# Bhu-Drishti — full stack.  docker compose up --build  →  http://localhost:8080 (n8n on :5678)
 services:
   db:
     image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_USER: satquery
-      POSTGRES_PASSWORD: satquery
-      POSTGRES_DB: satquery
-    volumes: [db-data:/var/lib/postgresql/data]
+      POSTGRES_USER: bhudrishti
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bhudrishti}
+      POSTGRES_DB: bhudrishti
+    volumes: [pg-data:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U satquery"]
+      test: ["CMD-SHELL", "pg_isready -U bhudrishti"]
       interval: 5s
       retries: 10
 
@@ -16,29 +16,48 @@ services:
     build:
       context: ./engine
       args:
-        WITH_REAL_DATA: ${WITH_REAL_DATA:-false}
+        WITH_REAL_DATA: ${WITH_REAL_DATA:-true}
     environment:
-      AEQE_PROVIDER: ${AEQE_PROVIDER:-simulated}
+      AEQE_PROVIDER: ${AEQE_PROVIDER:-auto}
       AEQE_SIM_LATENCY: ${AEQE_SIM_LATENCY:-0.12}
+      AEQE_SEQUENTIAL: ${AEQE_SEQUENTIAL:-spending}
+      AEQE_CORS: http://backend:4000
       AEQE_LLM: ${AEQE_LLM:-}
       AEQE_LLM_MODEL: ${AEQE_LLM_MODEL:-}
       AEQE_LLM_BASE_URL: ${AEQE_LLM_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-    volumes: [engine-data:/data]
+      # live data sources (values come from .env; never logged)
+      CDSE_CLIENT_ID: ${CDSE_CLIENT_ID:-}
+      CDSE_CLIENT_SECRET: ${CDSE_CLIENT_SECRET:-}
+      CDSE_PU_BUDGET: ${CDSE_PU_BUDGET:-3000}
+      NASA_FIRMS_MAP_KEY: ${NASA_FIRMS_MAP_KEY:-}
+      EARTHDATA_TOKEN: ${EARTHDATA_TOKEN:-}
+      EARTHDATA_USERNAME: ${EARTHDATA_USERNAME:-}
+      EARTHDATA_PASSWORD: ${EARTHDATA_PASSWORD:-}
+      GOOGLE_CLOUD_PROJECT_ID: ${GOOGLE_CLOUD_PROJECT_ID:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}   # repo-relative path, resolved under /app
+    volumes:
+      - engine-data:/data
+      - ./engine/credentials:/app/engine/credentials:ro
     ports: ["8000:8000"]
 
   backend:
     build: ./backend
     environment:
       ENGINE_URL: http://engine:8000
-      DATABASE_URL: postgres://satquery:satquery@db:5432/satquery
+      DATABASE_URL: postgres://bhudrishti:${POSTGRES_PASSWORD:-bhudrishti}@db:5432/bhudrishti
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      CORS_ORIGIN: http://localhost:8080
+      CORS_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
       NODE_ENV: production
+      PUBLIC_API_URL: http://backend:4000
+      REPORT_DELIVERY: ${REPORT_DELIVERY:-smtp}
+      ALLOW_PRIVATE_WEBHOOKS: "true"          # n8n runs on the same Docker network
+      MONITOR_SCHEDULER: "true"
       SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
       SMTP_PORT: ${SMTP_PORT:-465}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     depends_on:
       db: { condition: service_healthy }
       engine: { condition: service_started }
@@ -47,8 +66,29 @@ services:
   web:
     build: ./frontend
     depends_on: [backend]
-    ports: ["8080:80"]
+    ports: ["${WEB_PORT:-8080}:80"]
+
+  # Self-hosted automation for report e-mails (import n8n/bhu-drishti-reports.json)
+  n8n:
+    image: n8nio/n8n:1.80.3
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      GENERIC_TIMEZONE: Asia/Kolkata
+      TZ: Asia/Kolkata
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      N8N_SECURE_COOKIE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n:/workflows:ro
+    ports: ["5678:5678"]
+    profiles: ["n8n"]
 
 volumes:
-  db-data:
+  pg-data:
   engine-data:
+  n8n-data:

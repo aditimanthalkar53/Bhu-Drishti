@@ -4,7 +4,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { EngineClient, EngineError } from "./engine-client.js";
 import { queryLimiter } from "./ratelimit.js";
 import type { QuerySession, Store } from "./store/types.js";
-import { createReportPdf } from "./report.js";
+import { audit, buildReportPdf, snapshot } from "./delivery.js";
+import type { Report } from "./domain.js";
 import { sendReportEmail } from "./email.js";
 
 type IdParams = { Params: { id: string } };
@@ -35,12 +36,15 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
     } catch (e) {
       engineHealth = { ok: false, error: (e as Error).message };
     }
-    return { ok: true, service: "satquery-backend", engine: engineHealth };
+    return { ok: true, service: "bhu-drishti-backend", engine: engineHealth };
   });
 
-  app.get("/api/regions", auth, async (_req, reply) => {
+  app.get<{ Querystring: { q?: string; kind?: string } }>("/api/regions", auth, async (req, reply) => {
     try {
-      return await engine.get("/regions");
+      const qs = new URLSearchParams();
+      if (req.query.q) qs.set("q", req.query.q);
+      if (req.query.kind) qs.set("kind", req.query.kind);
+      return await engine.get(`/regions${qs.size ? `?${qs}` : ""}`);
     } catch (e) {
       return sendEngineError(reply, e);
     }
@@ -105,20 +109,21 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
     if (!s) return;
     try {
       
-const summary = await engine.get<{
-  status: QuerySession["status"];
-  result?: {
-    answer?: string | null;
-    estimate?: Record<string, unknown> | null;
-  } | null;
-}>(`/queries/${s.id}`);
+      const summary = await engine.get<{
+        status: QuerySession["status"];
+        result?: (Record<string, any> & { answer?: string | null; estimate?: Record<string, unknown> | null }) | null;
+      }>(`/queries/${s.id}`);
 
-      if (summary.status !== s.status || (summary.result && !s.answer)) {
-        await store.updateSession(s.id, {
+      let current = s;
+      if (summary.status !== s.status || (summary.result && (!s.answer || !s.result))) {
+        const patch = {
           status: summary.status, answer: summary.result?.answer ?? null, estimate: summary.result?.estimate ?? null,
-        });
+          result: snapshot(summary.result),
+        };
+        await store.updateSession(s.id, patch);
+        current = { ...s, ...patch };
       }
-      return { session: { ...s, status: summary.status }, engine: summary };
+      return { session: current, engine: summary };
     } catch (e) {
       if (e instanceof EngineError && e.status === 404) {
         // engine restarted: the job is gone but the session record remains
@@ -165,7 +170,8 @@ const summary = await engine.get<{
           if (line) {
             try {
               const r = JSON.parse(line.slice(6));
-              void store.updateSession(s.id, { status: r.stop_reason === "user_stop" ? "stopped" : "done", answer: r.answer, estimate: r.estimate });
+              void store.updateSession(s.id, { status: r.stop_reason === "user_stop" ? "stopped" : "done", answer: r.answer, estimate: r.estimate,
+                result: snapshot(r) });
             } catch { /* ignore malformed */ }
           }
         } else if (block.includes("event: error")) {
@@ -208,7 +214,7 @@ const summary = await engine.get<{
     const r = await engine.raw(`/queries/${s.id}/trace`);
     if (!r.ok) return reply.code(r.status).send(await r.json().catch(() => ({ error: "trace unavailable" })));
     reply.header("content-type", "application/json");
-    reply.header("content-disposition", `attachment; filename="satquery-trace-${s.id}.json"`);
+    reply.header("content-disposition", `attachment; filename="bhu-drishti-trace-${s.id}.json"`);
     return reply.send(Buffer.from(await r.arrayBuffer()));
   });
 
@@ -248,32 +254,34 @@ const summary = await engine.get<{
       }
 
       try {
-        const pdf = await createReportPdf({
-          queryId: s.id,
-          question: s.question,
-          status: s.status,
-          answer: s.answer,
-          estimate: s.estimate,
-        });
-
-        await sendReportEmail(recipient, s.id, pdf);
-
-        return {
-          ok: true,
-          message: `Report emailed to ${recipient}.`,
+        const adhoc: Report = {
+          id: `q-${s.id}`, ownerId: s.userId, createdAt: new Date().toISOString(), title: s.question.slice(0, 120),
+          queryIds: [s.id], regionId: s.regionId, status: "approved", origin: "user", summary: s.answer ?? "",
+          recipientIds: [], groupIds: [], approvedBy: s.userId,
         };
-      
+        const pdf = await buildReportPdf(store, engine, adhoc);
+        await sendReportEmail(recipient, adhoc.title, adhoc.summary, pdf);
+        await audit(store, s.userId, s.userId, "query.email_report", `query:${s.id}`, { to: recipient });
+        return { ok: true, message: `Report emailed to ${recipient}.` };
       } catch (error) {
-        console.error("EMAIL REPORT ERROR:", error);
-
         req.log.error({ err: error }, "Failed to email query report");
-
-        return reply.code(502).send({
-          error: "Could not send the report email. Please try again later.",
-        });
+        return reply.code(502).send({ error: "Could not send the report email. Please try again later." });
       }
-
     },
   );
 
+  // PDF of a single query (download without emailing)
+  app.get<IdParams>("/api/queries/:id/report.pdf", auth, async (req, reply) => {
+    const s = await ownedSession(req, reply);
+    if (!s) return;
+    if (s.status !== "done" && s.status !== "stopped") return reply.code(409).send({ error: "the query has not finished" });
+    const adhoc: Report = {
+      id: `q-${s.id}`, ownerId: s.userId, createdAt: new Date().toISOString(), title: s.question.slice(0, 120), queryIds: [s.id],
+      regionId: s.regionId, status: "approved", origin: "user", summary: s.answer ?? "", recipientIds: [], groupIds: [],
+    };
+    const pdf = await buildReportPdf(store, engine, adhoc);
+    reply.header("content-type", "application/pdf");
+    reply.header("content-disposition", `attachment; filename="bhu-drishti-${s.id}.pdf"`);
+    return reply.send(pdf);
+  });
 }

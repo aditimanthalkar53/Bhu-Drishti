@@ -1,0 +1,138 @@
+{
+  "name": "Bhu-Drishti — report delivery",
+  "active": false,
+  "settings": { "executionOrder": "v1", "timezone": "Asia/Kolkata" },
+  "nodes": [
+    {
+      "id": "a1",
+      "name": "Bhu-Drishti webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "bhu-drishti",
+      "parameters": { "httpMethod": "POST", "path": "bhu-drishti", "responseMode": "onReceived", "options": {} }
+    },
+    {
+      "id": "a2",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Paste the webhook signing secret shown once in Bhu-Drishti → Settings → Webhooks\nconst SECRET = 'PASTE_WHSEC_SECRET_HERE';\nconst crypto = require('crypto');\nconst h = $json.headers;\nconst ts = Number(h['x-bhudrishti-timestamp']);\nconst body = JSON.stringify($json.body);\nconst expected = 'sha256=' + crypto.createHmac('sha256', SECRET).update(`${ts}.${body}`).digest('hex');\nconst got = h['x-bhudrishti-signature'] || '';\nif (got.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected))) throw new Error('bad signature');\nif (Math.abs(Date.now() / 1000 - ts) > 300) throw new Error('stale webhook');\nreturn { json: { event: $json.body.event, ...$json.body.data } };"
+      }
+    },
+    {
+      "id": "a3",
+      "name": "Report approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "c1", "leftValue": "={{ $json.event }}", "rightValue": "report.approved", "operator": { "type": "string", "operation": "equals" } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a4",
+      "name": "Fetch PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, -100],
+      "credentials": { "httpHeaderAuth": { "id": "", "name": "Bhu-Drishti API key" } },
+      "parameters": {
+        "url": "={{ $json.pdf_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "response": { "response": { "responseFormat": "file", "outputPropertyName": "report" } } }
+      }
+    },
+    {
+      "id": "a5",
+      "name": "One item per recipient",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, -100],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const out = [];\nfor (const item of $input.all()) {\n  const r = $('Verify signature').first().json;\n  for (const p of r.recipients) {\n    out.push({ json: { report_id: r.report_id, title: r.title, summary: r.summary, deliveries_url: r.deliveries_url, recipient_id: p.id, to: p.email, name: p.name }, binary: item.binary });\n  }\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "a6",
+      "name": "Email recipient",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1100, -100],
+      "continueOnFail": true,
+      "credentials": { "smtp": { "id": "", "name": "SMTP" } },
+      "parameters": {
+        "fromEmail": "reports@example.org",
+        "toEmail": "={{ $json.to }}",
+        "subject": "=Bhu-Drishti report — {{ $json.title }}",
+        "emailFormat": "text",
+        "text": "=Dear {{ $json.name }},\n\n{{ $json.summary }}\n\nThe full report with data sources, uncertainty and limitations is attached.\n\n— Bhu-Drishti satellite monitoring",
+        "options": { "attachments": "report" }
+      }
+    },
+    {
+      "id": "a7",
+      "name": "Log delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, -100],
+      "credentials": { "httpHeaderAuth": { "id": "", "name": "Bhu-Drishti API key" } },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('One item per recipient').item.json.deliveries_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ recipient_id: $('One item per recipient').item.json.recipient_id, to: $('One item per recipient').item.json.to, status: $json.error ? 'failed' : 'sent', error: $json.error ? String($json.error.message || $json.error) : undefined, provider_message_id: $json.messageId }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "b1",
+      "name": "Daily 08:00 IST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300],
+      "parameters": { "rule": { "interval": [{ "field": "days", "triggerAtHour": 8 }] } }
+    },
+    {
+      "id": "b2",
+      "name": "Generate daily bulletin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 300],
+      "credentials": { "httpHeaderAuth": { "id": "", "name": "Bhu-Drishti API key" } },
+      "parameters": {
+        "method": "POST",
+        "url": "http://backend:4000/api/reports/generate",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Bhu-Drishti webhook": { "main": [[{ "node": "Verify signature", "type": "main", "index": 0 }]] },
+    "Verify signature": { "main": [[{ "node": "Report approved?", "type": "main", "index": 0 }]] },
+    "Report approved?": { "main": [[{ "node": "Fetch PDF", "type": "main", "index": 0 }], []] },
+    "Fetch PDF": { "main": [[{ "node": "One item per recipient", "type": "main", "index": 0 }]] },
+    "One item per recipient": { "main": [[{ "node": "Email recipient", "type": "main", "index": 0 }]] },
+    "Email recipient": { "main": [[{ "node": "Log delivery", "type": "main", "index": 0 }]] },
+    "Daily 08:00 IST": { "main": [[{ "node": "Generate daily bulletin", "type": "main", "index": 0 }]] }
+  }
+}

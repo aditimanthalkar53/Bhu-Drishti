@@ -25,6 +25,8 @@ class Target(str, Enum):
     FLOODED_CROPLAND = "flooded_cropland"
     NEW_BUILTUP = "new_builtup"
     BRICK_KILN = "brick_kiln"
+    ACTIVE_FIRE = "active_fire"            # satellite thermal-anomaly detections (NASA FIRMS)
+    BURNED_CROPLAND = "burned_cropland"    # burn-scar area on cropland (Sentinel-2 dNBR)
 
 
 class Point(BaseModel):
@@ -77,9 +79,16 @@ class QueryIR(BaseModel):
 
 
 TASK_TARGETS: dict[Task, set[Target]] = {
-    Task.AREA_FRACTION: {Target.FLOODED_CROPLAND},
-    Task.TOTAL: {Target.NEW_BUILTUP, Target.FLOODED_CROPLAND},
-    Task.COUNT: {Target.BRICK_KILN},
-    Task.FIND_ALL: {Target.BRICK_KILN, Target.NEW_BUILTUP, Target.FLOODED_CROPLAND},
+    Task.AREA_FRACTION: {Target.FLOODED_CROPLAND, Target.BURNED_CROPLAND},
+    Task.TOTAL: {Target.NEW_BUILTUP, Target.FLOODED_CROPLAND, Target.BURNED_CROPLAND},
+    Task.COUNT: {Target.BRICK_KILN, Target.ACTIVE_FIRE},
+    Task.FIND_ALL: {Target.BRICK_KILN, Target.NEW_BUILTUP, Target.FLOODED_CROPLAND, Target.ACTIVE_FIRE},
     Task.INSPECT: {Target.FLOODED_CROPLAND, Target.NEW_BUILTUP, Target.BRICK_KILN},
 }
+
+# Targets whose per-tile value is cheap and complete (a catalogue of detections),
+# so the engine counts every tile exactly instead of sampling.
+CENSUS_TARGETS = {Target.ACTIVE_FIRE}
+
+# Targets measured on a cropland denominator (area_fraction = share of cropland)
+CROPLAND_TARGETS = {Target.FLOODED_CROPLAND, Target.BURNED_CROPLAND}

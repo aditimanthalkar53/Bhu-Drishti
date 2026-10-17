@@ -1,5 +1,5 @@
 import pg from "pg";
-import type { ApiKey, Project, QuerySession, Store, User } from "./types.js";
+import type { ApiKey, Project, QuerySession, RecordKind, Store, StoredRecord, User } from "./types.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -17,6 +17,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project ON query_sessions(project_id);
 CREATE TABLE IF NOT EXISTS api_keys (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, label TEXT NOT NULL,
   prefix TEXT NOT NULL, hash TEXT UNIQUE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+ALTER TABLE query_sessions ADD COLUMN IF NOT EXISTS result JSONB;
+ALTER TABLE query_sessions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'user';
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON query_sessions(user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS records (
+  kind TEXT NOT NULL, id TEXT NOT NULL, owner_id TEXT NOT NULL, data JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (kind, id));
+CREATE INDEX IF NOT EXISTS idx_records_owner ON records(kind, owner_id, created_at DESC);
 `;
 
 const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v));
@@ -30,7 +38,8 @@ function toProject(r: any): Project {
 function toSession(r: any): QuerySession {
   return {
     id: r.id, projectId: r.project_id, userId: r.user_id, question: r.question, regionId: r.region_id,
-    status: r.status, answer: r.answer, estimate: r.estimate, createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
+    status: r.status, answer: r.answer, estimate: r.estimate, result: r.result ?? null, source: r.source ?? "user",
+    createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
   };
 }
 function toKey(r: any): ApiKey {
@@ -80,14 +89,19 @@ export class PostgresStore implements Store {
 
   async createSession(s: QuerySession) {
     await this.pool.query(
-      `INSERT INTO query_sessions (id,project_id,user_id,question,region_id,status,answer,estimate,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [s.id, s.projectId, s.userId, s.question, s.regionId, s.status, s.answer, s.estimate, s.createdAt, s.updatedAt],
+      `INSERT INTO query_sessions (id,project_id,user_id,question,region_id,status,answer,estimate,result,source,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [s.id, s.projectId, s.userId, s.question, s.regionId, s.status, s.answer, s.estimate, s.result ?? null, s.source ?? "user",
+        s.createdAt, s.updatedAt],
     );
     return s;
   }
+  async sessionsForUser(userId: string, limit = 200) {
+    const r = await this.pool.query("SELECT * FROM query_sessions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2", [userId, limit]);
+    return r.rows.map(toSession);
+  }
   async updateSession(id: string, patch: Partial<QuerySession>) {
-    const cols: Record<string, string> = { status: "status", answer: "answer", estimate: "estimate" };
+    const cols: Record<string, string> = { status: "status", answer: "answer", estimate: "estimate", result: "result" };
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [k, col] of Object.entries(cols)) {
@@ -125,6 +139,31 @@ export class PostgresStore implements Store {
   }
   async deleteApiKey(userId: string, id: string) {
     const r = await this.pool.query("DELETE FROM api_keys WHERE id=$1 AND user_id=$2", [id, userId]);
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  async putRecord<T extends StoredRecord>(kind: RecordKind, rec: T) {
+    const now = new Date().toISOString();
+    const data = { ...rec, updatedAt: now };
+    await this.pool.query(
+      `INSERT INTO records (kind,id,owner_id,data,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (kind,id) DO UPDATE SET data=EXCLUDED.data, owner_id=EXCLUDED.owner_id, updated_at=EXCLUDED.updated_at`,
+      [kind, rec.id, rec.ownerId, data, rec.createdAt, now],
+    );
+    return data as T;
+  }
+  async getRecord<T extends StoredRecord>(kind: RecordKind, id: string) {
+    const r = await this.pool.query("SELECT data FROM records WHERE kind=$1 AND id=$2", [kind, id]);
+    return r.rows[0] ? (r.rows[0].data as T) : undefined;
+  }
+  async listRecords<T extends StoredRecord>(kind: RecordKind, ownerId?: string) {
+    const r = ownerId === undefined
+      ? await this.pool.query("SELECT data FROM records WHERE kind=$1 ORDER BY created_at DESC", [kind])
+      : await this.pool.query("SELECT data FROM records WHERE kind=$1 AND owner_id=$2 ORDER BY created_at DESC", [kind, ownerId]);
+    return r.rows.map((x) => x.data as T);
+  }
+  async deleteRecord(kind: RecordKind, id: string) {
+    const r = await this.pool.query("DELETE FROM records WHERE kind=$1 AND id=$2", [kind, id]);
     return (r.rowCount ?? 0) > 0;
   }
 }
