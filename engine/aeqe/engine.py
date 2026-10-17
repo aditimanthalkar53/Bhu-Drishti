@@ -83,6 +83,7 @@ class Job:
     trace: dict = field(default_factory=dict)
     evidence: Optional[list] = None
     live: bool = False
+    replay_batch_sizes: Optional[list] = None
     _cond: threading.Condition = field(default_factory=threading.Condition)
 
     def emit(self, event: dict) -> None:
@@ -236,9 +237,10 @@ class Engine:
         return steps
 
     # ------------------------------------------------------------------ jobs
-    def submit(self, compile_result: CompileResult, *, replay_of: Optional[str] = None, replay_n: Optional[int] = None) -> Job:
+    def submit(self, compile_result: CompileResult, *, replay_of: Optional[str] = None, replay_n: Optional[int] = None,
+               replay_batch_sizes: Optional[list] = None) -> Job:
         job = Job(id=uuid.uuid4().hex[:12], ir=compile_result.ir, compile_info=compile_result.to_json(),
-                  replay_of=replay_of, replay_n=replay_n)
+                  replay_of=replay_of, replay_n=replay_n, replay_batch_sizes=replay_batch_sizes)
         self.jobs[job.id] = job
         threading.Thread(target=self._run_safe, args=(job,), daemon=True, name=f"job-{job.id}").start()
         return job
@@ -273,7 +275,15 @@ class Engine:
         if simulate_latency and lat:
             # jitter makes the simulation look like real model calls (deterministic per tile)
             time.sleep(lat * (0.75 + 0.5 * ((hash(tile_id) % 1000) / 1000)))
-        out = oracle.run(u, idx, ir)
+        try:
+            out = oracle.run(u, idx, ir)
+        except Exception as e1:  # noqa: BLE001 — one retry, then the tile is recorded as unobserved
+            try:
+                out = oracle.run(u, idx, ir)
+            except Exception as e2:  # noqa: BLE001
+                msg = f"{type(e2).__name__}: {e2}"[:300] or str(e1)[:300]
+                return {"idx": idx, "value": 0.0, "detail": {"no_data": True, "reason": "data read failed", "error": msg},
+                        "cache": False, "latency_s": time.perf_counter() - t0, "saved_s": 0.0}
         dt = time.perf_counter() - t0
         if write_cache:
             self.cache.put(key, tile_id=tile_id, scene_key=scene_key, oracle=oracle.name,
@@ -377,7 +387,8 @@ class Engine:
                 stop_reason = "replay_complete"
                 break
 
-            alloc = state.allocate(cfg.batch_size, state.residual_sd(X))
+            requested = self._batch_for_time(job, ir, t_start)
+            alloc = state.allocate(requested, state.residual_sd(X))
             if job.replay_n is not None:
                 over = state.n + int(alloc.sum()) - job.replay_n
                 if over > 0:  # trim to reproduce the recorded sample size exactly
@@ -433,7 +444,7 @@ class Engine:
             }
             job.emit(ev)
             job.trace["batches"].append({
-                "batch": batch_no, "allocation": alloc.tolist(),
+                "batch": batch_no, "allocation": alloc.tolist(), "requested": int(requested),
                 "tiles": [{k: t[k] for k in ("tile_id", "stratum", "value", "cache")} for t in batch_tiles],
                 "estimate": display, "elapsed_s": round(elapsed, 3),
             })
@@ -455,7 +466,28 @@ class Engine:
             result["missing_data_tiles"] = no_data
             result["caveats"].append(f"{no_data} sampled tile(s) had no usable imagery and were counted as 0 — the estimate "
                                      "is a lower bound for those areas.")
+            if no_data > 0.3 * max(state.n, 1):
+                stop_reason = "insufficient_evidence"
+                result["stop_reason"] = stop_reason
+                result["answer"] = (f"Insufficient evidence: {no_data} of {state.n} sampled tiles had no usable imagery "
+                                    "(cloud, missing scenes or read failures), so no reliable estimate can be given. "
+                                    "Widen the date window or try again later. Partial figure: " + result["answer"])
         self._finish(job, result, [u.tile_ids[i] for i in state.order], stop_reason)
+
+    def _batch_for_time(self, job: Job, ir: QueryIR, t_start: float) -> int:
+        """Shrink the batch when the time budget is nearly used, so a batch of slow live reads cannot overrun it by much."""
+        cfg = self.config
+        k = len(job.trace.get("batches", []))
+        if job.replay_n is not None:
+            sizes = job.replay_batch_sizes or []
+            return sizes[k] if k < len(sizes) else cfg.batch_size
+        lats = self._latencies(job)
+        if len(lats) < cfg.workers:
+            return cfg.batch_size
+        remaining = ir.budget_seconds - (time.perf_counter() - t_start)
+        per_wave = float(np.percentile(lats, 75))           # one wave = `workers` tiles in parallel
+        waves = max(1, int(remaining // max(per_wave, 1e-6)))
+        return int(max(cfg.workers, min(cfg.batch_size, waves * cfg.workers)))
 
     def _finish(self, job: Job, result: dict, sample_order: list[str], stop_reason: str) -> None:
         # supporting evidence runs in parallel; wait a bounded time for it
@@ -840,7 +872,8 @@ class Engine:
         reproduce the recorded estimate exactly; ``verify_replay`` checks it.
         """
         cr = CompileResult(job.ir, job.compile_info.get("parser", "replay"), job.compile_info.get("assumptions", []))
-        return self.submit(cr, replay_of=job.id, replay_n=job.result["n"] if job.result else None)
+        sizes = [b.get("requested") for b in job.trace.get("batches", []) if b.get("requested")]
+        return self.submit(cr, replay_of=job.id, replay_n=job.result["n"] if job.result else None, replay_batch_sizes=sizes or None)
 
     @staticmethod
     def verify_replay(original: Job, replay: Job) -> dict:

@@ -65,6 +65,8 @@ MAX_TILES = 8000
 SLOPE_MAX_DEG = 5.0
 DNBR_BURN = 0.27
 NBR_POST_MAX = 0.1
+CHAR_B08_MAX = 0.15   # surface reflectance: ash/char is dark; harvested straw is brighter
+CHAR_B12_MAX = 0.15
 ORACLE_RES = 0.0002   # ≈ 20 m
 S2_RES = 0.0001       # ≈ 10 m
 
@@ -113,10 +115,19 @@ def nbr(b08, b12):
         return (b08 - b12) / (b08 + b12)
 
 
-def burn_mask(nbr_pre, nbr_post, crop):
+def burn_mask(nbr_pre, nbr_post, crop, b08_post=None, b12_post=None):
+    """Burn scar = NBR dropped AND the field is dark (char/ash).
+
+    Harvesting paddy also drops NBR (green → straw), so dNBR alone mostly maps
+    harvest. Freshly burned fields are dark in NIR and SWIR-2, while harvested
+    stubble is bright straw — the darkness test separates them."""
     d = nbr_pre - nbr_post
     valid = np.isfinite(d)
-    return (d > DNBR_BURN) & (nbr_post < NBR_POST_MAX) & crop & valid, crop & valid
+    m = (d > DNBR_BURN) & (nbr_post < NBR_POST_MAX) & crop & valid
+    if b08_post is not None and b12_post is not None:
+        with np.errstate(invalid="ignore"):
+            m &= (b08_post < CHAR_B08_MAX) & (b12_post < CHAR_B12_MAX)
+    return m, crop & valid
 
 
 def grid_coords(bbox, shape) -> tuple[np.ndarray, np.ndarray]:
@@ -162,6 +173,24 @@ def _spread(items: list, k: int) -> list:
 def _clearest(items: list, k: int) -> list:
     """The ``k`` least-cloudy STAC items (Sentinel-2), deterministic order."""
     return sorted(items, key=lambda i: (float(i.properties.get("eo:cloud_cover", 100.0)), i.id))[:k]
+
+
+S2_OFFSET_FROM = np.datetime64("2022-01-25")
+
+
+def s2_reflectance(da) -> np.ndarray:
+    """Surface reflectance from Sentinel-2 L2A digital numbers.
+
+    Processing baseline 04.00 (acquisitions from 25 Jan 2022) adds a +1000 DN
+    offset (BOA_ADD_OFFSET = -1000); ignoring it biases every band ratio.
+    reflectance = (DN - offset) / 10000, with 0 treated as nodata."""
+    a = da.values.astype(float)
+    a[a == 0] = np.nan
+    if "time" in da.dims:
+        t = da["time"].values
+        shift = np.where(t >= S2_OFFSET_FROM, 1000.0, 0.0).reshape((-1,) + (1,) * (a.ndim - 1))
+        a = a - shift
+    return a / 10000.0
 
 
 def s2_clear(ds) -> np.ndarray:
@@ -231,7 +260,7 @@ class S1FloodChangeOracle(_LiveOracle):
 
 class S2BuiltChangeOracle(_LiveOracle):
     name = "s2_builtup_change"
-    model_version = "ndbi-maxndvi-scl-0.3"
+    model_version = "ndbi-maxndvi-scl-0.4"
     sensor = "sentinel-2"
     unit = "km²"
     description = ("Bi-temporal Sentinel-2 L2A Jan–Mar stacks (8 clearest scenes, SCL cloud mask, 20 m); built-up = median NDBI > 0.05, "
@@ -248,7 +277,7 @@ class S2BuiltChangeOracle(_LiveOracle):
         clear = s2_clear(ds)
         b = {}
         for k in ("B03", "B04", "B08", "B11"):
-            a = ds[k].values.astype(float)
+            a = s2_reflectance(ds[k])
             a[~clear] = np.nan
             b[k] = a if a.ndim == 3 else a[None]
         return builtup_from_stack(b["B03"], b["B04"], b["B08"], b["B11"])
@@ -273,38 +302,42 @@ class S2BuiltChangeOracle(_LiveOracle):
 
 class S2BurnOracle(_LiveOracle):
     name = "s2_dnbr_burn"
-    model_version = "dnbr-0.1"
+    model_version = "dnbr-char-0.2"
     sensor = "sentinel-2"
     unit = "km²"
-    description = f"Sentinel-2 dNBR (pre − post) > {DNBR_BURN} and post NBR < {NBR_POST_MAX} on WorldCover cropland (SCL cloud mask)"
+    description = (f"Sentinel-2 dNBR (pre − post) > {DNBR_BURN}, post NBR < {NBR_POST_MAX} and a dark char surface "
+                   f"(post NIR < {CHAR_B08_MAX}, SWIR-2 < {CHAR_B12_MAX} reflectance) on WorldCover cropland (SCL cloud mask)")
 
     def params_key(self, ir: QueryIR) -> str:
-        return f"dnbr>{DNBR_BURN};post<{NBR_POST_MAX};pre=25d;post=last10d+5;best4"
+        return f"dnbr>{DNBR_BURN};post<{NBR_POST_MAX};char<{CHAR_B08_MAX},{CHAR_B12_MAX};pre=25d;post=last10d+5;best4;refl"
 
-    def _nbr(self, bbox, which: str) -> Optional[np.ndarray]:
+    def _composite(self, bbox, which: str):
+        """Median NBR, B08 and B12 reflectance over the clearest scenes, or None."""
         items = _clearest(self.p.items_for_tile(which, self.ir, bbox), 4)
         if not items:
             return None
         ds = self.p.pc.load(items, ["B08", "B12", "SCL"], bbox, ORACLE_RES)
         clear = s2_clear(ds)
-        b08, b12 = ds["B08"].values.astype(float), ds["B12"].values.astype(float)
+        b08, b12 = s2_reflectance(ds["B08"]), s2_reflectance(ds["B12"])
         b08[~clear] = np.nan
         b12[~clear] = np.nan
         with np.errstate(all="ignore"):
             v = nbr(b08, b12)
-            return np.nanmedian(v, axis=0) if v.ndim == 3 else v
+            med = (lambda a: np.nanmedian(a, axis=0) if a.ndim == 3 else a)
+            return med(v), med(b08), med(b12)
 
     def run(self, u: TileUniverse, idx: int, ir: QueryIR) -> OracleOutput:
         bbox = tuple(float(v) for v in u.bboxes[idx])
-        pre, post = self._nbr(bbox, "s2_pre"), self._nbr(bbox, "s2_post")
+        pre, post = self._composite(bbox, "s2_pre"), self._composite(bbox, "s2_post")
         det = int(u.extra.get("firms_tile_counts", np.zeros(u.n))[idx])
         if pre is None or post is None:
             return OracleOutput(0.0, {"no_data": True, "reason": "no clear Sentinel-2 scene before or after", "firms_detections": det})
-        h, w = min(pre.shape[0], post.shape[0]), min(pre.shape[1], post.shape[1])
-        pre, post = pre[:h, :w], post[:h, :w]
+        h, w = min(pre[0].shape[0], post[0].shape[0]), min(pre[0].shape[1], post[0].shape[1])
+        nbr_pre, nbr_post = pre[0][:h, :w], post[0][:h, :w]
+        b08p, b12p = post[1][:h, :w], post[2][:h, :w]
         wc = self.p.worldcover_tile(bbox, (h, w))
         crop = (wc == WORLDCOVER_CROPLAND) & self._inside(bbox, (h, w))
-        burned, crop_obs = burn_mask(pre, post, crop)
+        burned, crop_obs = burn_mask(nbr_pre, nbr_post, crop, b08p, b12p)
         share = float(burned.sum() / max(crop_obs.sum(), 1))
         return OracleOutput(share * float(u.base_km2[idx]), {
             "burned_share_of_cropland": round(share, 4), "observed_cropland_share": round(float(crop_obs.sum() / max(crop.sum(), 1)), 3),
@@ -562,6 +595,9 @@ class LiveProvider(Provider):
                 checks.append(Check("Sentinel-2 Jan–Mar scenes (cloud < 40%)", n0 > 0 and n1 > 0, f"{y0}: {n0}, {ir.end.year}: {n1}"))
                 checks.append(Check("Baseline before target", y0 < ir.end.year, f"{y0} → {ir.end.year}"))
             elif ir.target == Target.BURNED_CROPLAND:
+                checks.append(Check("Experimental workflow", True, "burn-scar thresholds are not yet calibrated against reference "
+                                    "data — treat the number as indicative only; FIRMS fire counts are the validated signal",
+                                    blocking=False))
                 n0, n1 = len(self._window_items("s2_pre", ir)), len(self._window_items("s2_post", ir))
                 checks.append(Check("Sentinel-2 scenes before / after (cloud < 50%)", n0 > 0 and n1 > 0, f"pre: {n0}, post: {n1}"))
                 checks.append(Check("FIRMS (proxy for sampling)", self.firms.usable, self.firms.configured()[1], blocking=False))
@@ -880,8 +916,13 @@ class LiveProvider(Provider):
                   "says nothing about whether a construction is permitted.",
                   "Sentinel-2 at 20 m: single houses and narrow roads are below the pixel size; dense new settlements are captured."]
         elif ir.target == Target.BURNED_CROPLAND:
-            c += ["dNBR also drops when a crop is harvested; burned and freshly harvested fields can look alike. FIRMS detections "
-                  "per tile are shown for corroboration.", "Cloud or haze in the pre/post windows leaves parts of tiles unobserved."]
+            c += ["EXPERIMENTAL: the burned-cropland rule is not validated. In a live test (Sangrur, Oct–Nov 2025) the tile-level "
+                  "burn share did not correlate with independent FIRMS detections, so the thresholds need calibration against "
+                  "reference burned-area data before this number is used for decisions. Use the FIRMS fire count instead.",
+                  "Burn scars need both an NBR drop and a dark (ash) surface, to separate burning from harvest. Fields burned and "
+                  "then ploughed before the post-window image, or burned under haze, are missed; dark wet soil can be confused. "
+                  "FIRMS detections per tile are shown for corroboration.",
+                  "Cloud or haze in the pre/post windows leaves parts of tiles unobserved."]
         elif ir.target == Target.ACTIVE_FIRE:
             c += ["Counts are satellite detections (375 m VIIRS / 1 km MODIS pixels at overpass time), not individual fires or "
                   "fields: one field can produce several detections, and fires between overpasses or under cloud are missed.",

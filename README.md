@@ -15,7 +15,7 @@ tight enough — with intervals that stay valid however often the run is checked
 |---|---|---|
 | Flooded cropland (share / km²) | % ± pp, km², per-tile flood map | Sentinel-1 RTC change vs dry-season reference, WorldCover cropland, Copernicus DEM slope mask |
 | Fires / stubble burning | exact count of detections, ranked hotspot tiles | NASA FIRMS VIIRS + MODIS (NRT and archive) |
-| Burned cropland (km² / share) | km² ± %, per-tile burn share with FIRMS corroboration | Sentinel-2 dNBR, FIRMS density as the sampling guide |
+| Burned cropland (km² / share) — **experimental, not validated** | km² ± %, per-tile burn share with FIRMS corroboration | Sentinel-2 dNBR + char darkness, FIRMS density as the sampling guide. Thresholds need calibration against reference burned-area data (see Limitations) |
 | New construction (km²) | km² ± % between two years | Sentinel-2 dry-season stacks, persistent built-up rule |
 | Context (never mixed into the number) | rainfall totals, MODIS flood share, Copernicus cross-check, 7-day rain and river-discharge forecast | GPM IMERG, MCDWD_L3_NRT, CDSE Statistical API, Open-Meteo/GloFAS |
 | What to do next | recovery / prevention guidance per hazard, season and state | PMFBY, SDRF/NDRF norms, ICAR-CRIDA contingency plans, CRM scheme |
@@ -139,6 +139,10 @@ every report before an official receives it, and each delivery is logged and aud
 * A fire detection is a thermal anomaly, not proof of its cause or of who is responsible; new built-up area says
   nothing about legality. Results are screening outputs for human review.
 * WorldCover (2021) defines cropland, not the crop standing in the query year.
+* **Burned cropland is experimental.** dNBR alone mapped harvest as burning (88.7 % of Sangrur's cropland, Oct–Nov
+  2025); adding a char-darkness test gave 0.4 % with no correlation to FIRMS detections (Spearman 0.05). The rule needs
+  calibration against reference data (e.g. PRSC burned-area maps or field reports) before its numbers are used. FIRMS
+  fire counts are the validated fire signal.
 * MODIS NRT flood files are kept only for a short rolling window, so past events have no MODIS evidence.
 * Teams/roles, WhatsApp and SMS delivery are not built yet (phase 2; SMS in India needs DLT registration).
 
