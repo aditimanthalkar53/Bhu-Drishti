@@ -71,10 +71,16 @@ docker compose --profile n8n up -d n8n    # optional: self-hosted n8n on :5678
 Local development (Python 3.11+, Node 20+):
 
 ```bash
-cd engine && pip install -r requirements-real.txt -r requirements-dev.txt && uvicorn aeqe.server:app --port 8000
+cd engine && pip install -r requirements-real.txt -r requirements-dev.txt && uvicorn aeqe.server:app --port 8000 --env-file ../.env
 cd backend && npm install && npm run dev        # :4000, in-memory store unless DATABASE_URL is set
 cd frontend && npm install && npm run dev       # :5173
+cd backend && npm run test:email                # optional: check SMTP by mailing SMTP_USER
 ```
+
+The engine does not read `.env` by itself: without `--env-file ../.env` every credential is missing (the startup log
+says which sources are configured). Without `requirements-real.txt` the engine still runs, but only the two simulated
+demo districts are available (`/health` shows `"live_data": false`). On Windows, `rasterio` and `pyhdf` may have no
+prebuilt wheels for the newest Python; if `pip install` fails, use Docker Desktop or WSL.
 
 ### Credentials (backend/engine only — never in the browser)
 
