@@ -26,16 +26,24 @@ class Region:
     geometry: dict  # GeoJSON geometry
     simulated: bool
     description: str = ""
+    state: str = ""
+    kind: str = "demo"        # demo | district | custom
+    area_km2: Optional[float] = None
 
-    def to_json(self) -> dict:
-        return {
+    def to_json(self, geometry: bool = True) -> dict:
+        d = {
             "id": self.id,
             "name": self.name,
             "bbox": list(self.bbox),
-            "geometry": self.geometry,
             "simulated": self.simulated,
             "description": self.description,
+            "state": self.state,
+            "kind": self.kind,
+            "area_km2": self.area_km2,
         }
+        if geometry:
+            d["geometry"] = self.geometry
+        return d
 
 
 @dataclass
@@ -159,3 +167,30 @@ class Provider(ABC):
 
     def supports(self, target: Target) -> bool:
         return True
+
+    # -- optional hooks (live data) -------------------------------------------------------
+    def oracle_latency(self, ir: QueryIR) -> float:
+        """Artificial per-call latency (simulator only)."""
+        return getattr(self, "oracle_latency_s", 0.0)
+
+    def is_live(self, ir: QueryIR) -> bool:
+        r = self.region(ir.region_id)
+        return bool(r and not r.simulated)
+
+    def census_values(self, ir: QueryIR, u: TileUniverse) -> tuple[np.ndarray, list[dict], dict]:
+        """For census targets: exact per-tile values, per-tile details and a summary."""
+        raise NotImplementedError
+
+    def supporting_evidence(self, ir: QueryIR, u: TileUniverse) -> list[dict]:
+        """Context from other sources (rainfall, MODIS flood, forecasts). Never enters the estimate."""
+        return []
+
+    def inputs_provenance(self, ir: QueryIR) -> list[dict]:
+        """Source records (items, acquisition times, assets) the run depends on."""
+        return []
+
+    def caveats(self, ir: QueryIR) -> list[str]:
+        return []
+
+    def on_job_done(self, ir: QueryIR, oracle_calls: int) -> None:
+        """Called after a successful run (used to mark sources as verified end to end)."""

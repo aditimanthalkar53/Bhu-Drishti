@@ -431,6 +431,10 @@ class SimulatedProvider(Provider):
         checks.append(Check("Region known", region is not None, region.name if region else f"unknown region '{ir.region_id}'"))
         if region is None:
             return checks
+        if ir.target in (Target.ACTIVE_FIRE, Target.BURNED_CROPLAND):
+            checks.append(Check("Target available in the simulator", False,
+                                "fire and burned-area questions use live NASA FIRMS / Sentinel-2 data — pick a real district"))
+            return checks
         in_range = SIM_FIRST_YEAR <= ir.start.year <= SIM_LAST_YEAR and ir.end <= date(SIM_LAST_YEAR, 12, 31)
         checks.append(
             Check("Dates within archive", in_range, f"{ir.start} → {ir.end} (archive {SIM_FIRST_YEAR}–{SIM_LAST_YEAR})")

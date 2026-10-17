@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, eventsUrl } from "./api";
-import type { CompileInfo, EstimateView, PlanEvent, ProgressEvent, ResultEvent, TileEvent } from "./types";
+import type { CompileInfo, EstimateView, EvidenceItem, PlanEvent, ProgressEvent, ResultEvent, TileEvent } from "./types";
 
 export interface HistoryPoint {
   n: number;
@@ -13,6 +13,7 @@ export interface HistoryPoint {
 export interface RunState {
   id: string | null;
   status: "idle" | "running" | "done" | "stopped" | "failed";
+  stage: string | null;
   compile: CompileInfo | null;
   plan: PlanEvent | null;
   progress: ProgressEvent | null;
@@ -20,13 +21,14 @@ export interface RunState {
   history: HistoryPoint[];
   sampled: Map<string, TileEvent>;
   result: ResultEvent | null;
+  evidence: EvidenceItem[] | null;
   universe: GeoJSON.FeatureCollection | null;
   error: string | null;
 }
 
 const empty: RunState = {
-  id: null, status: "idle", compile: null, plan: null, progress: null, estimate: null,
-  history: [], sampled: new Map(), result: null, universe: null, error: null,
+  id: null, status: "idle", stage: null, compile: null, plan: null, progress: null, estimate: null,
+  history: [], sampled: new Map(), result: null, evidence: null, universe: null, error: null,
 };
 
 /** Subscribes to an engine run over Server-Sent Events and accumulates its state. */
@@ -51,10 +53,13 @@ export function useQueryRun() {
     const es = new EventSource(eventsUrl(id));
     esRef.current = es;
 
+    es.addEventListener("status", (m) => {
+      const ev = JSON.parse((m as MessageEvent).data);
+      setState((s) => ({ ...s, stage: ev.message ?? null }));
+    });
     es.addEventListener("plan", (m) => {
       const ev = JSON.parse((m as MessageEvent).data) as PlanEvent;
-      setState((s) => ({ ...s, plan: ev }));
-      // the tile universe (with proxy scores) exists as soon as the plan does
+      setState((s) => ({ ...s, plan: ev, stage: null }));
       api<GeoJSON.FeatureCollection>(`/api/queries/${id}/universe`)
         .then((u) => setState((s) => (s.id === id ? { ...s, universe: u } : s)))
         .catch(() => undefined);
@@ -71,9 +76,14 @@ export function useQueryRun() {
         return { ...s, progress: ev, estimate: e ?? s.estimate, history, sampled };
       });
     });
+    es.addEventListener("evidence", (m) => {
+      const ev = JSON.parse((m as MessageEvent).data);
+      setState((s) => ({ ...s, evidence: ev.items ?? [] }));
+    });
     es.addEventListener("result", (m) => {
       const ev = JSON.parse((m as MessageEvent).data) as ResultEvent;
-      setState((s) => ({ ...s, result: ev, estimate: ev.estimate, status: ev.stop_reason === "user_stop" ? "stopped" : "done" }));
+      setState((s) => ({ ...s, result: ev, estimate: ev.estimate, evidence: ev.supporting_evidence ?? s.evidence,
+        status: ev.stop_reason === "user_stop" ? "stopped" : "done" }));
     });
     es.addEventListener("error", (m) => {
       const data = (m as MessageEvent).data;
@@ -84,7 +94,6 @@ export function useQueryRun() {
     });
     es.addEventListener("end", () => close());
     es.onerror = () => {
-      // EventSource reconnects by itself; only give up if the run is clearly over
       setState((s) => (s.status === "running" && es.readyState === EventSource.CLOSED
         ? { ...s, status: "failed", error: "Lost the connection to the engine." } : s));
     };

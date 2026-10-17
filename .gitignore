@@ -6,3 +6,15 @@ __pycache__/
 engine/data/
 .env
 *.tsbuildinfo
+
+# credentials and secrets: never commit
+engine/credentials/
+*.json.key
+service-account*.json
+/env
+
+# local overrides and downloaded data
+docker-compose.override.yml
+*.HDF5
+*.hdf5
+*.nc4

@@ -1,5 +1,5 @@
 const BASE = import.meta.env.VITE_API_URL ?? "";
-const TOKEN_KEY = "satquery.token";
+const TOKEN_KEY = "bhudrishti.token";
 
 function readToken(): string | null {
   try {
@@ -32,6 +32,10 @@ export class ApiError extends Error {
       const failed = d.plan.checks.filter((c: any) => !c.ok && c.blocking).map((c: any) => `${c.name}: ${c.detail}`);
       return failed.length ? failed.join(" · ") : d.message;
     }
+    if (body?.plan?.checks) {
+      const failed = body.plan.checks.filter((c: any) => !c.ok && c.blocking).map((c: any) => `${c.name}: ${c.detail}`);
+      if (failed.length) return `${body.error ?? "Not runnable"} — ${failed.join(" · ")}`;
+    }
     if (Array.isArray(d)) return d.map((e: any) => e.msg ?? String(e)).join("; ");
     return `Request failed (${status})`;
   }
@@ -60,6 +64,11 @@ export async function api<T = any>(path: string, init: RequestInit = {}): Promis
 export const post = <T = any>(path: string, body?: unknown) =>
   api<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 
+export const patch = <T = any>(path: string, body: unknown) =>
+  api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
+
+export const del = <T = any>(path: string) => api<T>(path, { method: "DELETE" });
+
 let sessionPromise: Promise<{ id: string; name: string; guest: boolean }> | null = null;
 
 /** Make sure we hold a valid token; create a guest session if not. Single-flight. */
@@ -84,10 +93,16 @@ async function createOrResumeSession(): Promise<{ id: string; name: string; gues
   return r.user;
 }
 
+/** URL usable in <a href> / EventSource (cannot send headers): the token travels as ?token=. */
+export function authUrl(path: string) {
+  const sep = path.includes("?") ? "&" : "?";
+  return `${BASE}${path}${sep}token=${encodeURIComponent(token ?? "")}`;
+}
+
 export function eventsUrl(queryId: string) {
-  return `${BASE}/api/queries/${queryId}/events?token=${encodeURIComponent(token ?? "")}`;
+  return authUrl(`/api/queries/${queryId}/events`);
 }
 
 export function traceUrl(queryId: string) {
-  return `${BASE}/api/queries/${queryId}/trace?token=${encodeURIComponent(token ?? "")}`;
+  return authUrl(`/api/queries/${queryId}/trace`);
 }

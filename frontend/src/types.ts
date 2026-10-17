@@ -2,9 +2,12 @@ export interface Region {
   id: string;
   name: string;
   bbox: [number, number, number, number];
-  geometry: GeoJSON.Polygon;
+  geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon;
   simulated: boolean;
   description: string;
+  state?: string;
+  kind?: "demo" | "district" | "custom";
+  area_km2?: number | null;
 }
 
 export interface Check {
@@ -25,13 +28,15 @@ export interface Plan {
   sensor: string;
   sensor_reason: string;
   steps: PlanStep[];
+  steps_pending?: boolean;
 }
 
 export type Task = "area_fraction" | "total" | "count" | "find_all" | "inspect";
+export type Target = "flooded_cropland" | "new_builtup" | "brick_kiln" | "active_fire" | "burned_cropland";
 
 export interface QueryIR {
   task: Task;
-  target: "flooded_cropland" | "new_builtup" | "brick_kiln";
+  target: Target;
   region_id: string;
   start: string;
   end: string;
@@ -63,6 +68,8 @@ export interface EstimateView {
   proxy_r2?: number;
   total_km2?: number;
   base_km2?: number;
+  interval_method?: string;
+  interval_confidence?: number;
   // find-all
   confirmed_positive_tiles?: number;
   recall_lower_bound?: number;
@@ -71,6 +78,13 @@ export interface EstimateView {
   audit_tiles?: number;
   answers?: Record<string, number>;
   tiles?: number;
+  // census (fires)
+  detections?: number;
+  by_confidence?: Record<string, number>;
+  on_cropland?: number;
+  by_day?: Record<string, number>;
+  tiles_with_detections?: number;
+  newest_detection?: string | null;
 }
 
 export interface TileEvent {
@@ -109,6 +123,43 @@ export interface PlanEvent {
   units: { value: string; short: string };
 }
 
+export interface EvidenceItem {
+  id: string;
+  title: string;
+  source: string;
+  status: "ok" | "unavailable" | "not_configured" | "error";
+  summary: string;
+  role?: string;
+  data?: any;
+  provenance?: any[];
+}
+
+export interface AdvisoryItem {
+  title: string;
+  detail: string;
+  who: string;
+  when: string;
+  reference?: string;
+}
+
+export interface Advisory {
+  topic: string;
+  headline: string;
+  severity?: string;
+  season?: string;
+  state?: string;
+  items: AdvisoryItem[];
+  disclaimer: string;
+}
+
+export interface InputSummary {
+  source: string;
+  product: string;
+  items: number;
+  first: string | null;
+  last: string | null;
+}
+
 export interface ResultEvent {
   type: "result";
   estimate: EstimateView;
@@ -128,6 +179,13 @@ export interface ResultEvent {
   answer: string;
   caveats: string[];
   selected_tile_ids?: string[];
+  supporting_evidence?: EvidenceItem[];
+  advisory?: Advisory | null;
+  data_mode?: "live" | "simulated";
+  region?: Region | null;
+  inputs_summary?: InputSummary[];
+  missing_data_tiles?: number;
+  priority_tiles?: (Record<string, unknown> & { tile_id: string; bbox: number[]; detections?: number })[];
 }
 
 export interface Session {
@@ -138,6 +196,9 @@ export interface Session {
   status: string;
   answer: string | null;
   createdAt: string;
+  source?: "user" | "monitor";
+  data_mode?: string | null;
+  stop_reason?: string | null;
 }
 
 export interface ExhaustiveReport {
@@ -158,3 +219,29 @@ export interface ReplayReport {
   same_sample_order: boolean;
   replay_oracle_calls: number;
 }
+
+// ------------------------------------------------------------------ product records
+export interface AOI { id: string; name: string; regionId: string; kind: "district" | "custom" | "demo"; state?: string; description?: string; areaKm2?: number | null; createdAt: string }
+export type Schedule = { type: "interval"; hours: number } | { type: "daily"; time: string } | { type: "new_pass" } | { type: "manual" };
+export interface Threshold { metric: "value" | "lo" | "hi"; op: ">" | ">=" | "<" | "<="; value: number }
+export interface Monitor {
+  id: string; name: string; aoiId: string; regionId: string; question: string; schedule: Schedule; threshold?: Threshold | null;
+  recipientIds: string[]; groupIds: string[]; autoReport: boolean; requireApproval: boolean; enabled: boolean;
+  lastRunAt?: string | null; lastQueryId?: string | null; lastValue?: number | null; lastStatus?: string | null; lastError?: string | null;
+  nextRunAt?: string | null; createdAt: string;
+}
+export interface Alert { id: string; monitorId: string; queryId: string; regionId: string; title: string; message: string; value: number | null;
+  threshold: Threshold; status: "open" | "acknowledged" | "resolved"; assignee?: string | null; history: { at: string; by: string; action: string; note?: string }[]; createdAt: string }
+export interface Recipient { id: string; name: string; designation: string; department: string; state?: string; district?: string; regionIds: string[];
+  email: string; phone?: string; channels: string[]; groupIds: string[]; active: boolean; createdAt: string }
+export interface Group { id: string; name: string; description?: string; createdAt: string }
+export interface Delivery { id: string; reportId: string; recipientId?: string | null; channel: string; to: string; status: string; via: string; error?: string | null; createdAt: string }
+export interface Report { id: string; title: string; queryIds: string[]; regionId?: string | null; monitorId?: string | null; status: string; origin: string;
+  summary: string; recipientIds: string[]; groupIds: string[]; approvedBy?: string | null; approvedAt?: string | null; sentAt?: string | null; note?: string; createdAt: string;
+  deliveries?: Delivery[]; recipients?: Recipient[] }
+export interface Webhook { id: string; url: string; events: string[]; active: boolean; description?: string; lastStatus?: number | null; lastError?: string | null; lastDeliveredAt?: string | null; secret?: string; createdAt: string }
+export interface Notification { id: string; title: string; body: string; link?: string; level: "info" | "warning" | "critical"; read: boolean; createdAt: string }
+export interface AuditEntry { id: string; actor: string; actorName?: string; action: string; target: string; detail?: Record<string, unknown>; createdAt: string }
+export interface SourceStatus { id: string; name: string; homepage: string; status: string; status_label: string; detail: string; checked_at: string | null;
+  requires: string[]; configured: boolean; capabilities: { product: string; kind: string; description: string; temporal: string; resolution_m: number | null; latency: string; limitations: string }[];
+  steps: { step: string; ok: boolean; seconds: number; result?: unknown; error?: any }[]; last_error: any }

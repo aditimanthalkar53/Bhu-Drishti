@@ -14,13 +14,14 @@ from typing import Any, Optional
 
 import numpy as np
 
+from .advisory import advisory_for
 from .cache import ResultCache
 from .compiler import CompileResult
 from .estimators import Estimate, FrontierAudit, SampleState, build_strata
-from .ir import TASK_TARGETS, QueryIR, Target, Task
+from .ir import CENSUS_TARGETS, CROPLAND_TARGETS, TASK_TARGETS, QueryIR, Target, Task
 from .providers.base import Check, Oracle, Provider, TileUniverse
 
-ENGINE_VERSION = "aeqe-0.2.0"
+ENGINE_VERSION = "aeqe-0.3.0"
 
 # A tile counts as "containing the target" for find-all when the oracle output
 # reaches this value (oracle units). Small change/flood fragments are noise.
@@ -28,7 +29,26 @@ POSITIVE_THRESHOLD = {
     Target.BRICK_KILN: 1.0,          # ≥ 1 detected kiln
     Target.NEW_BUILTUP: 0.02,        # ≥ 2 ha of new built-up area
     Target.FLOODED_CROPLAND: 0.05,   # ≥ 5 ha of flooded cropland
+    Target.ACTIVE_FIRE: 1.0,         # ≥ 1 detection
+    Target.BURNED_CROPLAND: 0.05,    # ≥ 5 ha of burn scar
 }
+
+TARGET_WORDS = {
+    Target.FLOODED_CROPLAND: ("flooded", "cropland"),
+    Target.BURNED_CROPLAND: ("burned", "cropland"),
+}
+
+
+def spent_confidence(conf: float, look: int) -> float:
+    """Per-look confidence so that the error over *all* looks is at most 1 − conf.
+
+    Alpha spending α_k = α · 6 / (π² k²) sums to α over k = 1, 2, …, so the
+    interval reported at whichever look the run stops on (precision met,
+    budget, or the user pressing stop) keeps its nominal coverage despite the
+    repeated peeking. Union bound: conservative, needs no assumptions.
+    """
+    alpha = 1.0 - conf
+    return 1.0 - alpha * 6.0 / (math.pi ** 2 * max(look, 1) ** 2)
 
 
 @dataclass
@@ -38,6 +58,10 @@ class EngineConfig:
     min_n_to_stop: int = 60
     stable_batches_to_stop: int = 2   # precision must hold for this many consecutive batches
     max_inspect_tiles: int = 80
+    # "spending": anytime-valid intervals under repeated looks (default);
+    # "fixed": nominal fixed-sample interval at every look (faster, validated only by simulation)
+    sequential: str = "spending"
+    evidence_wait_s: float = 90.0
 
 
 @dataclass
@@ -57,6 +81,8 @@ class Job:
     strata: Optional[np.ndarray] = None
     state: Optional[SampleState] = None
     trace: dict = field(default_factory=dict)
+    evidence: Optional[list] = None
+    live: bool = False
     _cond: threading.Condition = field(default_factory=threading.Condition)
 
     def emit(self, event: dict) -> None:
@@ -84,7 +110,25 @@ class Job:
             "result": self.result,
             "error": self.error,
             "replay_of": self.replay_of,
+            "data_mode": "live" if self.live else "simulated",
         }
+
+
+def summarize_inputs(inputs: list[dict]) -> list[dict]:
+    """Group provenance records by (source, product): item count and acquisition span."""
+    groups: dict[tuple, dict] = {}
+    for p in inputs:
+        if "source" not in p:
+            continue
+        g = groups.setdefault((p["source"], p.get("product")), {"source": p["source"], "product": p.get("product"),
+                                                                  "items": 0, "first": None, "last": None})
+        g["items"] += 1
+        for k, pick in (("acquired_start", "first"), ("acquired_end", "last")):
+            v = p.get(k)
+            if v and v != "None":
+                cur = g[pick]
+                g[pick] = v if cur is None else (min(cur, v) if pick == "first" else max(cur, v))
+    return list(groups.values())
 
 
 def units_for(ir: QueryIR) -> dict:
@@ -93,6 +137,8 @@ def units_for(ir: QueryIR) -> dict:
     if ir.task == Task.TOTAL:
         return {"value": "km²", "short": "km²"}
     if ir.task == Task.COUNT:
+        if ir.target == Target.ACTIVE_FIRE:
+            return {"value": "fire detections", "short": "detections"}
         return {"value": "kilns", "short": "kilns"}
     if ir.task == Task.FIND_ALL:
         return {"value": "tiles with target", "short": "tiles"}
@@ -127,28 +173,43 @@ class Engine:
                 checks.append(Check("Point inside region", inside, f"({ir.point.lat:.4f}, {ir.point.lon:.4f})"))
         return checks
 
-    def plan(self, ir: QueryIR) -> dict:
+    def plan(self, ir: QueryIR, quick: bool = False) -> dict:
+        """Validate and describe the run. ``quick`` skips building the tile universe (it can take
+        minutes for a new live district); the full steps then arrive in the job's ``plan`` event."""
         checks = self.validate(ir)
         ok = all(c.ok or not c.blocking for c in checks)
         sensor, reason = self.provider.choose_sensor(ir)
         steps: list[dict] = []
-        if ok:
+        pending = False
+        if ok and not quick:
             u = self.provider.universe(ir)
             oracle = self.provider.oracle(ir, sensor)
             steps = self._plan_steps(ir, u, oracle, sensor, reason)
-        return {"ok": ok, "checks": [c.to_json() for c in checks], "sensor": sensor, "sensor_reason": reason, "steps": steps}
+        elif ok:
+            pending = True
+            steps = [{"op": "prepare", "detail": "tile the region and compute cheap proxy scores for every tile (live data: "
+                                               "the first run in a district can take a few minutes; later runs reuse it)"}]
+        return {"ok": ok, "checks": [c.to_json() for c in checks], "sensor": sensor, "sensor_reason": reason,
+                "steps": steps, "steps_pending": pending}
 
     def _plan_steps(self, ir: QueryIR, u: TileUniverse, oracle: Oracle, sensor: str, reason: str) -> list[dict]:
         pop = {
             Target.FLOODED_CROPLAND: "tiles containing cropland (land-cover mask)",
+            Target.BURNED_CROPLAND: "tiles containing cropland (land-cover mask)",
             Target.NEW_BUILTUP: "all tiles in the region",
             Target.BRICK_KILN: "all tiles in the region",
+            Target.ACTIVE_FIRE: "all tiles in the region",
         }[ir.target]
+        td = u.extra.get("tile_deg")
+        size = f"{td:g}° (~{(td * 111) ** 2:.1f} km²)" if td else "~1 km²"
         steps = [
-            {"op": "discretise", "detail": f"{u.n:,} tiles of ~1 km² — population: {pop}"},
+            {"op": "discretise", "detail": f"{u.n:,} tiles of {size} — population: {pop}"},
             {"op": "proxy", "detail": f"cheap score for every tile: {u.proxy_description}"},
             {"op": "select_oracle", "detail": f"{oracle.name} ({oracle.model_version}) on {sensor}: {reason}"},
         ]
+        if ir.target in CENSUS_TARGETS:
+            steps.append({"op": "census", "detail": "the detection catalogue covers every tile → exact count per tile, no sampling or interval"})
+            return steps
         if ir.task == Task.INSPECT:
             steps.append({"op": "exact", "detail": "small area → run the oracle on every tile within the radius (no sampling)"})
             return steps
@@ -169,7 +230,8 @@ class Engine:
             {"op": "stratify", "detail": "6 strata by proxy-score quantiles (finer at the top); 3 pilot tiles per stratum"},
             {"op": "sample", "detail": f"batches of {self.config.batch_size} tiles, sequential Neyman allocation, {self.config.workers} parallel oracle workers, cache-first"},
             {"op": "estimate", "detail": "stratified expansion estimator → cross-fitted difference estimator once ≥30 labels (ridge proxy on cheap features)"},
-            {"op": "stop", "detail": f"target {prec} at {ir.confidence:.0%} confidence, or {ir.budget_seconds:g} s / {ir.budget_tiles} oracle tiles, or user stop"},
+            {"op": "stop", "detail": f"target {prec} at {ir.confidence:.0%} confidence, or {ir.budget_seconds:g} s / {ir.budget_tiles} oracle tiles, or user stop"
+             + ("; intervals use alpha spending so they stay valid however often the run is checked" if self.config.sequential == "spending" else "")},
         ]
         return steps
 
@@ -207,7 +269,7 @@ class Engine:
                 return {"idx": idx, "value": hit.value, "detail": hit.detail, "cache": True, "latency_s": 0.0,
                         "saved_s": hit.latency_s}
         t0 = time.perf_counter()
-        lat = getattr(self.provider, "oracle_latency_s", 0.0)
+        lat = self.provider.oracle_latency(ir)
         if simulate_latency and lat:
             # jitter makes the simulation look like real model calls (deterministic per tile)
             time.sleep(lat * (0.75 + 0.5 * ((hash(tile_id) % 1000) / 1000)))
@@ -235,16 +297,28 @@ class Engine:
             job.emit({"type": "error", "message": job.error})
             return
 
+        job.live = self.provider.is_live(ir)
+        job.emit({"type": "status", "stage": "preparing",
+                  "message": "Tiling the region and computing proxy scores from live data…" if job.live else "Preparing tiles…"})
         u = self.provider.universe(ir)
         oracle = self.provider.oracle(ir, sensor)
         scene_key = self.provider.scene_key(ir, sensor)
         job.universe = u
         units = units_for(ir)
+        pname = self.provider.provider_name(ir) if hasattr(self.provider, "provider_name") else self.provider.name
+        try:
+            inputs = self.provider.inputs_provenance(ir)
+        except Exception as e:  # noqa: BLE001 — provenance must never fail a run
+            inputs = [{"error": f"provenance unavailable: {type(e).__name__}"}]
+        if job.replay_of is None:
+            threading.Thread(target=self._collect_evidence, args=(job, u), daemon=True, name=f"evidence-{job.id}").start()
         job.trace = {
             "engine": ENGINE_VERSION,
             "job_id": job.id,
             "replay_of": job.replay_of,
-            "provider": self.provider.name,
+            "provider": pname,
+            "data_mode": "live" if job.live else "simulated",
+            "inputs": inputs,
             "ir": json.loads(ir.model_dump_json()),
             "compile": job.compile_info,
             "checks": [c.to_json() for c in checks],
@@ -265,6 +339,9 @@ class Engine:
         if ir.task == Task.INSPECT:
             self._run_inspect(job, u, oracle, scene_key, t_start)
             return
+        if ir.target in CENSUS_TARGETS:
+            self._run_census(job, u, oracle, scene_key, sensor, units, t_start)
+            return
         if ir.task == Task.FIND_ALL:
             self._run_find_all(job, u, oracle, scene_key, sensor, units, t_start)
             return
@@ -280,7 +357,9 @@ class Engine:
         calls = cache_hits = 0
         saved_s = 0.0
         batch_no = 0
+        looks = 0
         est: Optional[Estimate] = None
+        display: dict = {}
 
         while True:
             if job.stop_requested:
@@ -334,9 +413,16 @@ class Engine:
                 })
             batch_no += 1
 
-            est = state.best(X, ir.confidence)
+            eligible = state.n >= cfg.min_n_to_stop
+            looks += 1 if eligible else 0
+            conf_k = spent_confidence(ir.confidence, looks) if (cfg.sequential == "spending" and eligible) else ir.confidence
+            est = state.best(X, conf_k)
             display = self._display(ir, est, D)
-            met = state.n >= cfg.min_n_to_stop and self._precision_met(ir, display)
+            display["interval_confidence"] = round(conf_k, 6)
+            display["interval_method"] = ("anytime-valid (alpha spending, look %d)" % looks if cfg.sequential == "spending" and eligible
+                                          else "provisional (before the first stopping look)" if cfg.sequential == "spending"
+                                          else "fixed-sample")
+            met = eligible and self._precision_met(ir, display)
             consecutive_ok = consecutive_ok + 1 if met else 0
 
             elapsed = time.perf_counter() - t_start
@@ -358,18 +444,83 @@ class Engine:
         elapsed = time.perf_counter() - t_start
         if est is None:
             est = state.best(X, ir.confidence)
-        display = self._display(ir, est, D)
+            display = self._display(ir, est, D)
         result = self._result_common(job, u, state.n, calls, cache_hits, saved_s, elapsed, sensor, oracle,
                                      scene_key, units, stop_reason, display)
+        if stop_reason == "census":
+            result["caveats"].insert(0, "Every tile in the population was analysed (census), so there is no sampling error; "
+                                        "model and data errors still apply.")
+        no_data = sum(1 for e in job.events if e["type"] == "progress" for t in e["tiles"] if t["detail"].get("no_data"))
+        if no_data:
+            result["missing_data_tiles"] = no_data
+            result["caveats"].append(f"{no_data} sampled tile(s) had no usable imagery and were counted as 0 — the estimate "
+                                     "is a lower bound for those areas.")
         self._finish(job, result, [u.tile_ids[i] for i in state.order], stop_reason)
 
     def _finish(self, job: Job, result: dict, sample_order: list[str], stop_reason: str) -> None:
+        # supporting evidence runs in parallel; wait a bounded time for it
+        if job.replay_of is None:
+            t0 = time.time()
+            while job.evidence is None and time.time() - t0 < self.config.evidence_wait_s:
+                time.sleep(0.2)
+        result["supporting_evidence"] = job.evidence if job.evidence is not None else [
+            {"id": "pending", "status": "unavailable", "title": "Supporting evidence",
+             "summary": "still being fetched when the run finished — it will be added to the trace when it arrives"}]
+        result["inputs_summary"] = summarize_inputs(job.trace.get("inputs", []))
+        try:
+            result["advisory"] = advisory_for(job.ir, result, self.provider.region(job.ir.region_id))
+        except Exception as e:  # noqa: BLE001
+            result["advisory"] = {"error": f"{type(e).__name__}"}
         job.result = result
         job.trace["result"] = {k: v for k, v in result.items() if k != "selected_tile_ids"}
         job.trace["sample_order"] = sample_order
         self._save_trace(job)
         job.status = "stopped" if stop_reason == "user_stop" else "done"
+        if job.live and job.replay_of is None:
+            try:
+                self.provider.on_job_done(job.ir, result.get("oracle_calls", 0))
+            except Exception:  # noqa: BLE001
+                pass
         job.emit({"type": "result", **result})
+
+    def _collect_evidence(self, job: Job, u: TileUniverse) -> None:
+        try:
+            ev = self.provider.supporting_evidence(job.ir, u)
+        except Exception as e:  # noqa: BLE001
+            ev = [{"id": "error", "status": "error", "title": "Supporting evidence", "summary": f"{type(e).__name__}: {e}"[:300]}]
+        job.evidence = ev
+        job.trace["supporting_evidence"] = ev
+        job.emit({"type": "evidence", "items": ev})
+        if job.result is not None and job.status in ("done", "stopped"):
+            job.result["supporting_evidence"] = ev   # arrived after the result: keep trace and summary current
+            self._save_trace(job)
+
+    # ------------------------------------------------------------------ census (complete catalogues)
+    def _run_census(self, job: Job, u: TileUniverse, oracle: Oracle, scene_key: str, sensor: str, units: dict,
+                    t_start: float) -> None:
+        ir = job.ir
+        vals, details, summary = self.provider.census_values(ir, u)
+        order = np.argsort(-vals, kind="stable")
+        tiles = [{"tile_id": u.tile_ids[i], "idx": int(i), "stratum": 0, "value": float(vals[i]), "cache": False,
+                  "latency_s": 0.0, "detail": details[i]} for i in order if vals[i] > 0]
+        rank = np.zeros(u.n, dtype=int)
+        pos = vals > 0
+        if pos.any():
+            q = np.quantile(vals[pos], [0.5, 0.8, 0.95])
+            rank[pos] = 1 + (vals[pos] >= q[0]).astype(int) + (vals[pos] >= q[1]).astype(int) + (vals[pos] >= q[2]).astype(int)
+        job.strata = rank
+        total = float(vals.sum())
+        display = {"value": total, "lo": total, "hi": total, "halfwidth": 0.0, "method": "census", "n": u.n, **summary}
+        elapsed = time.perf_counter() - t_start
+        job.emit({"type": "progress", "batch": 1, "n": u.n, "population": u.n, "oracle_calls": 0, "cache_hits": 0,
+                  "elapsed_s": round(elapsed, 3), "estimate": display, "allocation": [], "tiles": tiles})
+        job.trace["design"] = "census"
+        job.trace["batches"] = [{"batch": 1, "tiles": [{k: t[k] for k in ("tile_id", "value")} for t in tiles]}]
+        result = self._result_common(job, u, u.n, 0, 0, 0.0, elapsed, sensor, oracle, scene_key, units, "census", display)
+        result["selected_tile_ids"] = [t["tile_id"] for t in tiles]
+        result["priority_tiles"] = [{"tile_id": t["tile_id"], "bbox": [round(float(v), 4) for v in u.bboxes[t["idx"]]],
+                                     **t["detail"]} for t in tiles[:25]]
+        self._finish(job, result, [], "census")
 
     def _result_common(self, job: Job, u: TileUniverse, n: int, calls: int, cache_hits: int, saved_s: float,
                        elapsed: float, sensor: str, oracle: Oracle, scene_key: str, units: dict, stop_reason: str,
@@ -382,9 +533,11 @@ class Engine:
             "oracle_calls": calls, "cache_hits": cache_hits, "compute_saved_by_cache_s": round(saved_s, 2),
             "elapsed_s": round(elapsed, 3), "mean_oracle_latency_s": round(mean_latency, 4),
             "projected_exhaustive_s": round(u.n * (mean_latency or 0.0) / self.config.workers, 1),
-            "sampled_fraction": round(n / u.n, 4), "sensor": sensor, "oracle": oracle.to_json(),
-            "scene_key": scene_key, "answer": self._answer_text(ir, display, n, u.n, oracle, sensor),
-            "caveats": self._caveats(ir, display),
+            "sampled_fraction": round(n / max(u.n, 1), 4), "sensor": sensor, "oracle": oracle.to_json(),
+            "scene_key": scene_key, "answer": self._answer_text(ir, display, n, u.n, oracle, sensor, self.provider.region(ir.region_id)),
+            "caveats": self._caveats(ir, display) + self.provider.caveats(ir),
+            "data_mode": "live" if job.live else "simulated",
+            "region": (lambda r: r.to_json(geometry=False) if r else None)(self.provider.region(ir.region_id)),
         }
 
     # ------------------------------------------------------------------ find-all
@@ -534,25 +687,37 @@ class Engine:
         return 100.0 * hw / v <= ir.precision
 
     @staticmethod
-    def _answer_text(ir: QueryIR, d: dict, n: int, N: int, oracle: Oracle, sensor: str) -> str:
+    def _answer_text(ir: QueryIR, d: dict, n: int, N: int, oracle: Oracle, sensor: str, region=None) -> str:
         conf = f"{ir.confidence:.0%}"
         window = f"{ir.start:%d %b %Y} – {ir.end:%d %b %Y}"
+        where = f" in {region.name}" + (f", {region.state}" if region is not None and region.state else "") if region is not None else ""
         tail = f" Based on {n:,} of {N:,} tiles analysed with {oracle.name} ({sensor})."
         if not d:
             return "No estimate was produced." + tail
+        if ir.target == Target.ACTIVE_FIRE:
+            byc = d.get("by_confidence", {})
+            head = (f"{int(d['value']):,} satellite fire detections{where} during {window} "
+                    f"({byc.get('high', 0)} high, {byc.get('nominal', 0)} nominal, {byc.get('low', 0)} low confidence); "
+                    f"{d.get('on_cropland', 0):,} on cropland, in {d.get('tiles_with_detections', 0):,} of {N:,} tiles.")
+            if d.get("newest_detection"):
+                head += f" Newest detection: {d['newest_detection']}."
+            if ir.task == Task.FIND_ALL:
+                head += " Tiles are ranked by detection count for field review."
+            return head + " Every tile counted from the NASA FIRMS catalogue — no sampling."
         if ir.task == Task.AREA_FRACTION:
-            return (f"About {d['value']:.1f}% of cropland was flooded during {window} "
+            verb, base = TARGET_WORDS.get(ir.target, ("affected", "cropland"))
+            return (f"About {d['value']:.1f}% of {base}{where} was {verb} during {window} "
                     f"({conf} CI {d['lo']:.1f}–{d['hi']:.1f}%), i.e. ≈{d['total_km2']:.0f} km² of "
-                    f"{d['base_km2']:.0f} km² cropland." + tail)
+                    f"{d['base_km2']:.0f} km² {base}." + tail)
         if ir.task == Task.TOTAL:
-            what = "new built-up area" if ir.target == Target.NEW_BUILTUP else "flooded cropland"
+            what = {Target.NEW_BUILTUP: "new built-up area", Target.BURNED_CROPLAND: "burned cropland"}.get(ir.target, "flooded cropland")
             span = f"between {ir.baseline_start.year} and {ir.end.year}" if ir.baseline_start else f"during {window}"
-            return f"About {d['value']:.1f} km² of {what} {span} ({conf} CI {d['lo']:.1f}–{d['hi']:.1f} km²)." + tail
+            return f"About {d['value']:.1f} km² of {what}{where} {span} ({conf} CI {d['lo']:.1f}–{d['hi']:.1f} km²)." + tail
         if ir.task == Task.COUNT:
-            return f"About {d['value']:.0f} brick kilns in {ir.end.year} ({conf} CI {d['lo']:.0f}–{d['hi']:.0f})." + tail
+            return f"About {d['value']:.0f} brick kilns{where} in {ir.end.year} ({conf} CI {d['lo']:.0f}–{d['hi']:.0f})." + tail
         if ir.task == Task.FIND_ALL:
             what = {Target.BRICK_KILN: "tiles with kilns", Target.NEW_BUILTUP: "tiles with new construction",
-                    Target.FLOODED_CROPLAND: "tiles with flooded cropland"}[ir.target]
+                    Target.FLOODED_CROPLAND: "tiles with flooded cropland"}.get(ir.target, "tiles with the target")
             ok = d["recall_lower_bound"] >= ir.precision / 100
             head = (f"Found {d['confirmed_positive_tiles']:,} {what}, each confirmed by the specialist model. "
                     f"With {conf} confidence this is at least {100 * d['recall_lower_bound']:.0f}% of all of them"
@@ -563,6 +728,9 @@ class Engine:
 
     @staticmethod
     def _caveats(ir: QueryIR, d: dict) -> list[str]:
+        if d and d.get("method") == "census":
+            return ["This is an exact count over every tile — there is no sampling error, but the catalogue's own "
+                    "limitations (cloud, overpass timing, pixel size) still apply."]
         out = ["The interval covers sampling error relative to what the specialist model would report over every "
                "tile. It does not include the model's own error against reality."]
         if ir.task == Task.FIND_ALL:

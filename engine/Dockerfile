@@ -1,8 +1,10 @@
 FROM python:3.12-slim
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 AEQE_DATA_DIR=/data
+# rasterio/GDAL wheels need libexpat at runtime; slim images do not ship it
+RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-real.txt ./
-ARG WITH_REAL_DATA=false
+ARG WITH_REAL_DATA=true
 RUN pip install --no-cache-dir -r requirements.txt && \
     if [ "$WITH_REAL_DATA" = "true" ]; then pip install --no-cache-dir -r requirements-real.txt; fi
 COPY aeqe ./aeqe

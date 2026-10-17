@@ -110,7 +110,7 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
     (await store.apiKeysFor(req.userId!)).map(({ hash: _h, ...k }) => k));
 
   app.post<{ Body: { label?: string } }>("/api/keys", { preHandler: app.authenticate }, async (req, reply) => {
-    const key = `sq_${randomBytes(24).toString("base64url")}`;
+    const key = `bd_${randomBytes(24).toString("base64url")}`;
     const k = await store.createApiKey({
       id: randomUUID(), userId: req.userId!, label: req.body?.label?.slice(0, 80) || "API key",
       prefix: key.slice(0, 10), hash: sha256(key), createdAt: new Date().toISOString(),

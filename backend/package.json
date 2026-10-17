@@ -1,8 +1,8 @@
 {
-  "name": "satquery-backend",
+  "name": "bhu-drishti-backend",
   "version": "0.2.0",
   "private": true,
-  "description": "SatQuery AI application API (Node.js + Fastify): auth, projects, query sessions, API keys, and a relay to the AEQE engine.",
+  "description": "Bhu-Drishti application API (Node.js + Fastify): auth, projects, query sessions, API keys, and a relay to the AEQE engine.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
