@@ -1,0 +1,8 @@
+# Optional: real Sentinel data via Microsoft Planetary Computer (AEQE_PROVIDER=planetary_computer)
+-r requirements.txt
+pystac-client>=0.8
+planetary-computer>=1.0
+odc-stac>=0.3.10
+rioxarray>=0.15
+pandas>=2.1
+pyarrow>=15

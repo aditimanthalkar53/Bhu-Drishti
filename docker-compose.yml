@@ -1,0 +1,54 @@
+# SatQuery AI — full stack.  docker compose up --build  →  http://localhost:8080
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: satquery
+      POSTGRES_PASSWORD: satquery
+      POSTGRES_DB: satquery
+    volumes: [db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U satquery"]
+      interval: 5s
+      retries: 10
+
+  engine:
+    build:
+      context: ./engine
+      args:
+        WITH_REAL_DATA: ${WITH_REAL_DATA:-false}
+    environment:
+      AEQE_PROVIDER: ${AEQE_PROVIDER:-simulated}
+      AEQE_SIM_LATENCY: ${AEQE_SIM_LATENCY:-0.12}
+      AEQE_LLM: ${AEQE_LLM:-}
+      AEQE_LLM_MODEL: ${AEQE_LLM_MODEL:-}
+      AEQE_LLM_BASE_URL: ${AEQE_LLM_BASE_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes: [engine-data:/data]
+    ports: ["8000:8000"]
+
+  backend:
+    build: ./backend
+    environment:
+      ENGINE_URL: http://engine:8000
+      DATABASE_URL: postgres://satquery:satquery@db:5432/satquery
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CORS_ORIGIN: http://localhost:8080
+      NODE_ENV: production
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+    depends_on:
+      db: { condition: service_healthy }
+      engine: { condition: service_started }
+    ports: ["4000:4000"]
+
+  web:
+    build: ./frontend
+    depends_on: [backend]
+    ports: ["8080:80"]
+
+volumes:
+  db-data:
+  engine-data:
