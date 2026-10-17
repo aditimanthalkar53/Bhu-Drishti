@@ -130,6 +130,24 @@ every report before an official receives it, and each delivery is logged and aud
 * **Separate uncertainties.** Intervals cover sampling error relative to the model. Model error, data gaps (tiles with
   no usable imagery are counted and reported) and cloud are stated as limitations, never folded into the interval.
 
+## Benchmark (simulated districts, 100 seeded runs per row)
+
+Coverage = share of runs whose 95% interval contained the answer from running the model on every tile.
+
+| Question (district A) | Anytime-valid intervals (default) | Fixed-sample intervals (`AEQE_SEQUENTIAL=fixed`) |
+|---|---|---|
+| Flood share ±3 pp | 100% coverage · 5.7× fewer model runs | 97% · 10.9× |
+| Flood share ±1.5 pp | 100% · 2.9× | 98% · 6.7× |
+| New built-up ±10% | 100% · 2.0× | **89%** · 5.2× |
+| Kiln count ±15% | 100% · 1.2× | 98% · 2.2× |
+| Flooded area ±10% | 100% · 2.7× | 100% · 6.3× |
+
+The default never undercovers but is conservative (the union bound spends α over every look), so it needs roughly
+twice the samples. The fixed-sample mode is about twice as efficient but its validity rests on these simulations, and
+it fell to 89% for heavy-tailed construction change. A tighter anytime-valid method (betting-based confidence sequences)
+would recover much of the gap and is the main statistical improvement left. Full tables: `engine/bench/RESULTS.md`
+(default) and `engine/bench/results_fixed.json` (fixed-sample run).
+
 ## Limitations
 
 * Satellite data are not real-time: Sentinel-1 passes every 6–12 days, Sentinel-2 every ~5 days (cloud permitting),

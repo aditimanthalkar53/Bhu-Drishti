@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def main(src: Path = Path("bench/results.json"), dst: Path = Path("bench/RESULTS.md")) -> None:
-    d = json.loads(src.read_text())
+    d = json.loads(src.read_text(encoding="utf-8"))
     rows = [
         "| Question | District | Tiles | Exhaustive answer | Mean estimate | Interval covered exhaustive | "
         "Mean ± at stop | Oracle tiles used | Fewer model runs |",
@@ -27,7 +27,7 @@ def main(src: Path = Path("bench/results.json"), dst: Path = Path("bench/RESULTS
         f"# Benchmark results\n\n{d['runs_per_scenario']} runs per row with different random seeds, "
         f"generated {d.get('generated_at', 'n/a')}.\n\n{d.get('note', '')}\n\n" + "\n".join(rows) + "\n"
     )
-    dst.write_text(text)
+    dst.write_text(text, encoding="utf-8")
     print(text)
 
 
