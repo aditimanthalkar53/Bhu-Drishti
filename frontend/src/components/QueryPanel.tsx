@@ -55,22 +55,6 @@ export function QueryPanel(p: Props) {
 
   return (
     <aside className="pane pane-query" aria-label="Ask a question">
-      <header className="brand">
-        <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
-          <rect width="32" height="32" rx="6" fill="var(--ink)" />
-          <g fill="none" stroke="var(--paper)" strokeWidth="1.5">
-            <rect x="6" y="6" width="6" height="6" /><rect x="13" y="6" width="6" height="6" /><rect x="20" y="6" width="6" height="6" />
-            <rect x="6" y="13" width="6" height="6" /><rect x="20" y="13" width="6" height="6" />
-            <rect x="6" y="20" width="6" height="6" /><rect x="13" y="20" width="6" height="6" />
-          </g>
-          <rect x="13" y="13" width="6" height="6" fill="var(--water)" /><rect x="20" y="20" width="6" height="6" fill="var(--water)" />
-        </svg>
-        <div>
-          <h1>Explore</h1>
-          <p className="muted small">Ask about any district in India — answers tighten as the engine works</p>
-        </div>
-      </header>
-
       <form
         className="query-form"
         onSubmit={(e) => {

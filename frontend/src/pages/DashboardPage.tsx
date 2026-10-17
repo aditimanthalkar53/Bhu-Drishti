@@ -1,11 +1,13 @@
 import "leaflet/dist/leaflet.css";
 import { useEffect, useState } from "react";
-import { GeoJSON, MapContainer, TileLayer, useMap } from "react-leaflet";
+import { GeoJSON, MapContainer, useMap } from "react-leaflet";
+import { BaseLayers } from "../components/BaseLayers";
+import { cssVar, useTheme } from "../theme";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { ago, fmt } from "../format";
-import type { AOI, Alert, Monitor, Region, Report, Session } from "../types";
-import { ErrorNote, Page, Pill, ReportStatus, useData } from "./common";
+import type { AOI, Alert, Monitor, Region, Report, Session, SourceStatus } from "../types";
+import { ErrorNote, Pill, ReportStatus, useData } from "./common";
 
 interface Dash {
   counts: { open_alerts: number; monitors: number; active_monitors: number; aois: number; reports_pending: number; unread_notifications: number };
@@ -17,20 +19,36 @@ interface Dash {
 }
 
 export function DashboardPage() {
-  const { data, error } = useData<Dash>("/api/dashboard");
+  const { data, error, loading, reload } = useData<Dash>("/api/dashboard");
   const c = data?.counts;
   const firstRun = data && data.aois.length === 0 && data.monitors.length === 0;
   return (
-    <Page title="Dashboard" lead="Active alerts, monitored areas and the latest satellite analyses at a glance.">
+    <main className="page">
+      <section className="hero">
+        <div>
+          <p className="eyebrow">Satellite flood intelligence · India</p>
+          <h1>Bhu-Drishti dashboard</h1>
+          <p>Error-bounded answers on flooded cropland, fires and construction for any district, computed from Sentinel, NASA and Copernicus data, with the uncertainty stated.</p>
+        </div>
+        <div className="page-actions">
+          <Link className="btn btn-primary btn-inline" to="/app">Ask a question</Link>
+          <button className="btn" onClick={() => void reload()} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button>
+        </div>
+      </section>
       <ErrorNote error={error} />
       {firstRun && <SetupGuide />}
-      <div className="kpis">
-        <Kpi label="Open alerts" value={c?.open_alerts} tone={c?.open_alerts ? "error" : undefined} to="/app/alerts" />
-        <Kpi label="Active monitors" value={c?.active_monitors} sub={c ? `of ${c.monitors}` : ""} to="/app/monitors" />
-        <Kpi label="Areas of interest" value={c?.aois} to="/app/areas" />
-        <Kpi label="Reports awaiting approval" value={c?.reports_pending} tone={c?.reports_pending ? "warn" : undefined} to="/app/reports" />
-      </div>
+      {loading && !data ? (
+        <div className="kpis" aria-busy="true" aria-label="Loading">{[0, 1, 2, 3].map((i) => <div key={i} className="skeleton sk-kpi" />)}</div>
+      ) : (
+        <div className="kpis">
+          <Kpi label="Open alerts" value={c?.open_alerts} tone={c?.open_alerts ? "error" : undefined} to="/app/alerts" />
+          <Kpi label="Active monitors" value={c?.active_monitors} sub={c ? `of ${c.monitors}` : ""} to="/app/monitors" />
+          <Kpi label="Areas of interest" value={c?.aois} to="/app/areas" />
+          <Kpi label="Reports awaiting approval" value={c?.reports_pending} tone={c?.reports_pending ? "warn" : undefined} to="/app/reports" />
+        </div>
+      )}
       <div className="dash-grid">
+        <SourcesCard />
         <section className="card dash-map-card">
           <h2>Monitored areas</h2>
           {data && data.aois.length > 0 ? <AoiMap aois={data.aois} monitors={data.monitors} /> : <p className="muted small">Add an area of interest to see it here.</p>}
@@ -89,14 +107,67 @@ export function DashboardPage() {
           </ul>
         </section>
       </div>
-    </Page>
+    </main>
+  );
+}
+
+/** Counts up from 0 on first value; jumps straight to the value under prefers-reduced-motion. */
+function useCountUp(target: number | undefined): number | undefined {
+  const [shown, setShown] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (target == null) { setShown(undefined); return; }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || target === 0) { setShown(target); return; }
+    let raf = 0;
+    const t0 = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - t0) / 700);
+      setShown(Math.round(target * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target]);
+  return shown;
+}
+
+const SRC_TONE: Record<string, "ok" | "warn" | "error" | "info" | "muted"> = {
+  e2e_verified: "ok", retrieval_verified: "ok", discovery_verified: "info", authenticated: "info", configured: "muted", not_configured: "warn", blocked: "error",
+};
+const SRC_DOT: Record<string, string> = { ok: "", warn: "dot-warning", error: "dot-critical", info: "", muted: "" };
+
+/** Live status of each data provider, straight from /api/sources (no invented values). */
+function SourcesCard() {
+  const { data, error, loading } = useData<SourceStatus[]>("/api/sources");
+  return (
+    <section className="card src-card">
+      <div className="ev-head"><h2>Data sources</h2><Link className="small" to="/app/data">Details &amp; live checks</Link></div>
+      {loading && !data && <div aria-busy="true"><div className="skeleton sk-line" /><div className="skeleton sk-line" /><div className="skeleton sk-line" /></div>}
+      {error && <p className="notice notice-error" role="alert">Could not load source status: {error}</p>}
+      {data && data.length === 0 && <p className="muted small">The engine reports no data sources.</p>}
+      <div className="src-grid">
+        {data?.map((s) => {
+          const tone = SRC_TONE[s.status] ?? "muted";
+          return (
+            <div key={s.id} className="src-row">
+              <div className="src-left">
+                <span className={`dot ${SRC_DOT[tone]}`} aria-hidden="true" />
+                <div><strong>{s.name}</strong><small>{s.checked_at ? `checked ${ago(s.checked_at)}` : "not checked this session"}</small></div>
+              </div>
+              <Pill tone={tone}>{s.status_label}</Pill>
+            </div>
+          );
+        })}
+      </div>
+      <p className="muted small">“Verified” means a real request succeeded in this engine session. Open-Meteo river discharge is a modelled forecast, not a gauge reading.</p>
+    </section>
   );
 }
 
 function Kpi({ label, value, sub, tone, to }: { label: string; value?: number; sub?: string; tone?: "error" | "warn"; to: string }) {
+  const shown = useCountUp(value);
   return (
     <Link to={to} className={`kpi ${tone ? `kpi-${tone}` : ""}`}>
-      <span className="kpi-value">{value ?? "–"}</span>
+      <span className="kpi-value">{shown ?? "–"}</span>
       <span className="kpi-label">{label} {sub && <span className="muted">{sub}</span>}</span>
     </Link>
   );
@@ -133,15 +204,16 @@ function AoiMap({ aois, monitors }: { aois: AOI[]; monitors: Monitor[] }) {
   const bounds = shapes.length ? shapes.reduce<[number, number, number, number]>((b, s) =>
     [Math.min(b[0], s.region.bbox[0]), Math.min(b[1], s.region.bbox[1]), Math.max(b[2], s.region.bbox[2]), Math.max(b[3], s.region.bbox[3])],
   [180, 90, -180, -90]) : null;
+  const { mode } = useTheme();
   const status = (a: AOI) => monitors.filter((m) => m.aoiId === a.id).some((m) => m.lastStatus === "triggered") ? "alert" : "ok";
   return (
     <div className="mini-map">
       <MapContainer center={[22.5, 79]} zoom={4} className="map" preferCanvas>
-        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
+        <BaseLayers />
         <FitAll bounds={bounds} />
         {shapes.map(({ aoi, region }) => region.geometry && (
-          <GeoJSON key={aoi.id} data={{ type: "Feature", properties: {}, geometry: region.geometry } as GeoJSON.Feature}
-            style={{ color: status(aoi) === "alert" ? "#a33a2e" : "#1d5fb4", weight: 2, fillOpacity: 0.12 }}
+          <GeoJSON key={`${aoi.id}-${mode}`} data={{ type: "Feature", properties: {}, geometry: region.geometry } as GeoJSON.Feature}
+            style={{ color: cssVar(status(aoi) === "alert" ? "--error" : "--water"), weight: 2, fillOpacity: 0.12 }}
             onEachFeature={(_f, l) => l.bindTooltip(`${aoi.name}${region.state ? `, ${region.state}` : ""}`)} />
         ))}
       </MapContainer>
