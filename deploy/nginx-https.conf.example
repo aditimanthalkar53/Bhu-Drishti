@@ -1,0 +1,36 @@
+# Example TLS front door for a production host (Ubuntu + nginx + certbot).
+# 1. Point your domain's A/AAAA record at the server.  2. `docker compose up -d` (web listens on 127.0.0.1:8080
+#    if you set WEB_PORT=127.0.0.1:8080).  3. Copy this to /etc/nginx/sites-available/bhu-drishti, replace
+#    bhudrishti.example.in, enable it, then run `certbot --nginx -d bhudrishti.example.in`.
+#    Also set PUBLIC_APP_URL=https://bhudrishti.example.in and WEB_ORIGIN=https://bhudrishti.example.in in .env.
+server {
+  listen 80;
+  listen [::]:80;
+  server_name bhudrishti.example.in;
+  location /.well-known/acme-challenge/ { root /var/www/html; }
+  location / { return 301 https://$host$request_uri; }
+}
+
+server {
+  listen 443 ssl http2;
+  listen [::]:443 ssl http2;
+  server_name bhudrishti.example.in;
+
+  ssl_certificate     /etc/letsencrypt/live/bhudrishti.example.in/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/bhudrishti.example.in/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_prefer_server_ciphers off;
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  client_max_body_size 10m;
+
+  location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Connection "";
+    proxy_buffering off;          # live query progress is streamed (Server-Sent Events)
+    proxy_read_timeout 1h;
+  }
+}

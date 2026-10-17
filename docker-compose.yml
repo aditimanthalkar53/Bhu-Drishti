@@ -1,4 +1,6 @@
 # Bhu-Drishti — full stack.  docker compose up --build  →  http://localhost:8080 (n8n on :5678)
+# Only the web container is published to the network. engine/backend/n8n listen on 127.0.0.1 of the host
+# (for debugging); in production put HTTPS in front of web (see deploy/nginx-https.conf.example).
 services:
   db:
     image: postgis/postgis:16-3.4
@@ -43,16 +45,31 @@ services:
     volumes:
       - engine-data:/data
       - ./engine/credentials:/app/engine/credentials:ro
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
 
   backend:
     build: ./backend
     environment:
       ENGINE_URL: http://engine:8000
-      DATABASE_URL: postgres://bhudrishti:${POSTGRES_PASSWORD:-bhudrishti}@db:5432/bhudrishti
+      # users (login), projects, reports … live in SQLite on the backend-data volume.
+      # Set DATABASE_URL (e.g. postgres://bhudrishti:…@db:5432/bhudrishti) to use the PostGIS service instead.
+      SQLITE_PATH: /data/bhu-drishti.sqlite
+      DATABASE_URL: ${DATABASE_URL:-}
+      ALLOW_GUEST: "false"
+      REPORT_AUTO_EMAIL: ${REPORT_AUTO_EMAIL:-}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       CORS_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
       NODE_ENV: production
+      TRUST_PROXY: ${TRUST_PROXY:-1}           # proxies in front of the API: 1 = web container, 2 = plus an HTTPS proxy
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:8080}   # used in password-reset links
+      MAX_CONCURRENT_RUNS: ${MAX_CONCURRENT_RUNS:-2}
       PUBLIC_API_URL: http://backend:4000
       REPORT_DELIVERY: ${REPORT_DELIVERY:-smtp}
       ALLOW_PRIVATE_WEBHOOKS: "true"          # n8n runs on the same Docker network
@@ -62,15 +79,24 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-}
+    volumes:
+      - backend-data:/data
     depends_on:
-      db: { condition: service_healthy }
       engine: { condition: service_started }
-    ports: ["4000:4000"]
+    ports: ["127.0.0.1:4000:4000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
 
   web:
     build: ./frontend
     depends_on: [backend]
     ports: ["${WEB_PORT:-8080}:80"]
+    restart: unless-stopped
 
   # Self-hosted automation for report e-mails (import n8n/bhu-drishti-reports.json)
   n8n:
@@ -89,10 +115,12 @@ services:
     volumes:
       - n8n-data:/home/node/.n8n
       - ./n8n:/workflows:ro
-    ports: ["5678:5678"]
+    ports: ["127.0.0.1:5678:5678"]
+    restart: unless-stopped
     profiles: ["n8n"]
 
 volumes:
+  backend-data:
   pg-data:
   engine-data:
   n8n-data:

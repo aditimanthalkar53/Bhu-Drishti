@@ -28,6 +28,7 @@ export class ApiError extends Error {
   static describe(status: number, body: any): string {
     const d = body?.detail ?? body?.error ?? body;
     if (typeof d === "string") return d;
+    if (d?.kind === "out_of_scope" && typeof d.message === "string") return d.message;
     if (d?.message && d?.plan?.checks) {
       const failed = d.plan.checks.filter((c: any) => !c.ok && c.blocking).map((c: any) => `${c.name}: ${c.detail}`);
       return failed.length ? failed.join(" · ") : d.message;
@@ -68,30 +69,6 @@ export const patch = <T = any>(path: string, body: unknown) =>
   api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 
 export const del = <T = any>(path: string) => api<T>(path, { method: "DELETE" });
-
-let sessionPromise: Promise<{ id: string; name: string; guest: boolean }> | null = null;
-
-/** Make sure we hold a valid token; create a guest session if not. Single-flight. */
-export function ensureSession(): Promise<{ id: string; name: string; guest: boolean }> {
-  sessionPromise ??= createOrResumeSession().catch((e) => {
-    sessionPromise = null;
-    throw e;
-  });
-  return sessionPromise;
-}
-
-async function createOrResumeSession(): Promise<{ id: string; name: string; guest: boolean }> {
-  if (token) {
-    try {
-      return await api("/api/auth/me");
-    } catch {
-      setToken(null);
-    }
-  }
-  const r = await post<{ token: string; user: any }>("/api/auth/guest");
-  setToken(r.token);
-  return r.user;
-}
 
 /** URL usable in <a href> / EventSource (cannot send headers): the token travels as ?token=. */
 export function authUrl(path: string) {

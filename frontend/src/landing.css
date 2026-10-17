@@ -5,6 +5,8 @@
 .ambient-field canvas { display: block; }
 .shell { position: relative; isolation: isolate; }
 .shell > .sidebar, .shell > .topbar, .shell > .shell-body { position: relative; z-index: 1; }
+/* the top bar holds the account menu, notifications and global search: it must stack above the page body (map, cards) */
+.shell > .topbar { z-index: 20; }
 @media (max-width: 900px) { .shell > .sidebar { position: fixed; z-index: 1300; } }
 
 /* ---------------------------------------------------------------- glass, everywhere */
@@ -70,7 +72,9 @@
   width: min(1100px, 140vw); aspect-ratio: 1; height: auto;
 }
 @media (max-width: 700px) { .lx-globe-canvas, .lx-globe-fallback { top: 86%; width: 190vw; } }
-.lx-h1, .lx-lead { text-shadow: 0 2px 30px color-mix(in srgb, var(--paper) 80%, transparent); }
+.lx-h1 { text-shadow: 0 2px 30px color-mix(in srgb, var(--paper) 80%, transparent); }
+/* gradient text is painted through the glyphs: a text-shadow would fill them and wash the gradient out */
+.lx-h1 .lx-grad { text-shadow: none; }
 .lx-globe-fallback { border-radius: 50%; background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--water) 25%, transparent), transparent 60%); }
 .lx-hero::after { content: ""; position: absolute; inset: auto 0 0; height: 40%; background: linear-gradient(180deg, transparent, var(--paper)); pointer-events: none; }
 .lx-hero-copy { position: relative; z-index: 2; max-width: 980px; display: grid; justify-items: center; gap: 18px; align-self: start; margin-top: clamp(40px, 9vh, 110px); }
@@ -78,7 +82,15 @@
 .lx-mask { display: block; overflow: hidden; padding-bottom: 0.14em; margin-bottom: -0.08em; }
 .lx-line { display: inline-block; }
 .lx-grad { background: var(--grad-text); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.lx-lead { font-size: clamp(1.05rem, 1.6vw, 1.3rem); line-height: 1.55; color: var(--ink-2); max-width: 46ch; font-weight: 400; }
+.lx-lead { font-size: clamp(1.05rem, 1.6vw, 1.3rem); line-height: 1.55; color: var(--ink); max-width: 46ch; font-weight: 500; }
+/* readability over the moving globe: the lead sits on a frosted-glass panel (same glass as the app's cards) */
+.lx-hero .lx-lead {
+  padding: 14px 22px; border-radius: 18px;
+  background: color-mix(in srgb, var(--paper) 78%, transparent);
+  border: 1px solid var(--rule);
+  box-shadow: 0 8px 30px color-mix(in srgb, var(--ink) 8%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(140%); backdrop-filter: blur(10px) saturate(140%);
+}
 .lx-cta { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
 .lx-scroll-cue { position: absolute; z-index: 2; bottom: 28px; left: 50%; translate: -50% 0; width: 24px; height: 38px; border: 1.5px solid var(--rule-strong); border-radius: 14px; }
 .lx-scroll-cue span { position: absolute; left: 50%; top: 7px; width: 3px; height: 7px; margin-left: -1.5px; border-radius: 2px; background: var(--cyan); animation: cue 1.8s var(--ease) infinite; }

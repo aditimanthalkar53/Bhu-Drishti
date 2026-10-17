@@ -37,7 +37,7 @@ let app: Awaited<ReturnType<typeof buildApp>>;
 before(async () => {
   engine = await fakeEngine();
   const addr = engine.server.address() as { port: number };
-  app = await buildApp(loadConfig({ ENGINE_URL: `http://127.0.0.1:${addr.port}`, JWT_SECRET: "test" } as any), { logger: false });
+  app = await buildApp(loadConfig({ ENGINE_URL: `http://127.0.0.1:${addr.port}`, JWT_SECRET: "test", ALLOW_GUEST: "true", SQLITE_PATH: ":memory:" } as any), { logger: false });
 });
 
 after(async () => {

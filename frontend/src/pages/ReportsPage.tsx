@@ -59,6 +59,7 @@ export function ReportDetailPage() {
   const [editing, setEditing] = useState(false);
   const r = report.data;
   const [pdfKey, setPdfKey] = useState(0);
+  const [pdfStyle, setPdfStyle] = useState<"simple" | "technical">("simple");
 
   if (report.error) return <Page title="Report"><ErrorNote error={report.error} /></Page>;
   if (!r) return <Page title="Report"><p className="muted">Loading…</p></Page>;
@@ -167,9 +168,14 @@ export function ReportDetailPage() {
         <section className="card pdf-card">
           <div className="ev-head">
             <h2>PDF preview</h2>
-            <a className="btn btn-small" href={authUrl(`/api/reports/${r.id}/pdf`)} target="_blank" rel="noreferrer">Open in new tab</a>
+            <div className="seg" role="tablist" aria-label="Which PDF">
+              <button role="tab" aria-selected={pdfStyle === "simple"} className={pdfStyle === "simple" ? "active" : ""} onClick={() => setPdfStyle("simple")}>Summary</button>
+              <button role="tab" aria-selected={pdfStyle === "technical"} className={pdfStyle === "technical" ? "active" : ""} onClick={() => setPdfStyle("technical")}>Technical</button>
+            </div>
+            <a className="btn btn-small" href={authUrl(`/api/reports/${r.id}/pdf?style=${pdfStyle}`)} target="_blank" rel="noreferrer">Open in new tab</a>
           </div>
-          <iframe key={pdfKey} title="Report PDF" className="pdf-frame" src={authUrl(`/api/reports/${r.id}/pdf`)} />
+          <p className="muted small">{pdfStyle === "simple" ? "Plain-language summary for officials and the public." : "Full statistics, data sources and limitations."} Emails include both.</p>
+          <iframe key={`${pdfKey}-${pdfStyle}`} title="Report PDF" className="pdf-frame" src={authUrl(`/api/reports/${r.id}/pdf?style=${pdfStyle}`)} />
         </section>
       </div>
     </Page>

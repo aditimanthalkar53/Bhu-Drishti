@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyBaseLogger } from "fastify";
-import { audit, notify, reportRecipients, sendReport, snapshot } from "./delivery.js";
+import { audit, autoDeliver, notify, reportRecipients, sendReport, snapshot } from "./delivery.js";
 import type { Alert, Monitor, Report, Threshold } from "./domain.js";
 import { EngineClient, EngineError } from "./engine-client.js";
 import type { Project, QuerySession, Store } from "./store/types.js";
@@ -182,6 +182,7 @@ export class MonitorScheduler {
     const recipients = await reportRecipients(this.store, r);
     const { reportPayload } = await import("./delivery.js");
     await emit(this.store, m.ownerId, "report.ready", reportPayload(r, recipients, this.opts.publicUrl));
+    await autoDeliver(this.store, this.engine, r, this.log);
     await notify(this.store, m.ownerId, m.requireApproval ? "Report waiting for approval" : "Report ready", r.title,
       triggered ? "critical" : "info", `/app/reports/${r.id}`);
     if (!m.requireApproval && recipients.length) {

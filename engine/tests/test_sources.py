@@ -357,3 +357,78 @@ def test_library_logs_are_redacted(caplog):
     with caplog.at_level(logging.WARNING):
         logging.getLogger("odc.loader._builder").warning("Failed to load https://x.blob.core.windows.net/a.tif?st=1&sig=SECRETSIG%3D")
     assert "SECRETSIG" not in caplog.text and "sig=<redacted>" in caplog.text
+
+# ---------------------------------------------------------------- question scope
+from aeqe.compiler import OutOfScopeError, compile_question
+from aeqe.scope import classify
+
+
+@pytest.mark.parametrize("q,target", [
+    ("Are fields under water in the last week?", Target.FLOODED_CROPLAND),
+    ("waterlogging situation now", Target.FLOODED_CROPLAND),
+    ("parali burning this week", Target.ACTIVE_FIRE),
+    ("crop fires today", Target.ACTIVE_FIRE),
+    ("how many new houses came up between 2020 and 2025", Target.NEW_BUILTUP),
+    ("encroachment growth since 2020", Target.NEW_BUILTUP),
+])
+def test_more_ways_to_ask(q, target):
+    assert compile_question(q, region_id="in-x", live=True, today=TODAY).ir.target == target
+
+
+@pytest.mark.parametrize("q,category,topic", [
+    ("hello", "help", None),
+    ("what can you do?", "help", None),
+    ("What is the AQI in Delhi today?", "related", "air quality / pollution"),
+    ("Will it rain tomorrow?", "related", "weather, rainfall or forecasts"),
+    ("How much forest cover was lost?", "related", "forest / tree cover change"),
+    ("Who won the cricket match?", "off_topic", None),
+    ("Give me a recipe for biryani", "off_topic", None),
+])
+def test_out_of_scope_questions_get_a_clear_reply(q, category, topic):
+    with pytest.raises(OutOfScopeError) as e:
+        compile_question(q, region_id="in-x", live=True, today=TODAY)
+    r = e.value.reply.to_json()
+    assert r["kind"] == "out_of_scope" and r["category"] == category and r["topic"] == topic
+    assert r["message"] and r["suggestions"]
+
+
+def test_unanswerable_phrasing_falls_back_and_says_so():
+    cr = compile_question("Is there flooding near 26.42, 91.05 this week?", region_id="in-x", live=True, today=TODAY)
+    assert cr.ir.task == Task.AREA_FRACTION and any("single point" in a for a in cr.assumptions)
+    cr = compile_question("Show me all burned fields in the last 30 days", region_id="in-x", live=True, today=TODAY)
+    assert cr.ir.target == Target.BURNED_CROPLAND and cr.ir.task == Task.TOTAL
+    assert classify("flooded cropland in barpeta") is not None  # classify alone is only used after target detection fails
+
+def test_finished_jobs_survive_an_engine_restart(tmp_path):
+    """Answers and evidence maps are served from disk after the engine process restarts."""
+    import time as _t
+    from aeqe.compiler import compile_question
+    from aeqe.providers.simulated import SimulatedProvider
+
+    prov = SimulatedProvider(oracle_latency_s=0.0)
+    eng = Engine(prov, ResultCache(), tmp_path, EngineConfig(workers=2))
+    job = eng.submit(compile_question("What percentage of cropland was flooded during 1-15 July 2023?",
+                                      region_id="lower-brahmaputra-a"))
+    t0 = _t.time()
+    while job.status in ("queued", "running"):
+        assert _t.time() - t0 < 120
+        _t.sleep(0.02)
+    assert job.status == "done", job.error
+    for _ in range(50):                         # archiving happens right after the status flips
+        if (tmp_path / "jobs" / f"{job.id}.json").exists():
+            break
+        _t.sleep(0.02)
+    fresh = Engine(prov, ResultCache(), tmp_path, EngineConfig(workers=2))   # a "restarted" engine
+    a = fresh.archived(job.id)
+    assert a is not None and a["summary"]["status"] == "done"
+    assert a["summary"]["result"]["estimate"]["value"] == job.result["estimate"]["value"]
+    assert a["evidence"]["type"] == "FeatureCollection" and a["evidence"]["features"]
+    assert fresh.archived("../etc") is None
+
+
+def test_every_module_compiles():
+    """server.py is not imported by the tests (it builds live providers on import); at least make sure it parses."""
+    import py_compile
+    from pathlib import Path
+    for f in Path(__file__).resolve().parents[1].joinpath("aeqe").rglob("*.py"):
+        py_compile.compile(str(f), doraise=True)

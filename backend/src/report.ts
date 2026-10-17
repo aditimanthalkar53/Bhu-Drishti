@@ -163,12 +163,13 @@ function rings(geom: any): number[][][] {
   return [];
 }
 
-function drawMap(doc: PDFKit.PDFDocument, regionGeom: any, features: any[]) {
+export function drawMap(doc: PDFKit.PDFDocument, regionGeom: any, features: any[],
+  opts: { w?: number; h?: number; caption?: boolean; markFound?: boolean } = {}) {
   const all = rings(regionGeom).flat();
   if (!all.length) return;
   let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
   for (const [x, y] of all) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
-  const W = 300, Hh = 220;
+  const W = opts.w ?? 300, Hh = opts.h ?? 220;
   if (doc.y + Hh + 30 > doc.page.height - 60) doc.addPage();
   const left = doc.page.margins.left, top = doc.y;
   const k = Math.min(W / (x1 - x0), Hh / (y1 - y0));
@@ -193,9 +194,23 @@ function drawMap(doc: PDFKit.PDFDocument, regionGeom: any, features: any[]) {
     doc.lineWidth(0.8).strokeColor("#0b3d2e").stroke();
     doc.restore();
   }
+  // small tiles (a single fire detection) vanish at district scale: ring the ones where something was found
+  if (opts.markFound) {
+    for (const f of features) {
+      if (!(Number(f.properties?.value ?? 0) > 0)) continue;
+      const pts = rings(f.geometry).flat();
+      if (!pts.length) continue;
+      const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length, cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+      doc.save();
+      doc.circle(px(cx), py(cy), 5).lineWidth(1.4).strokeColor("#c0392b").stroke();
+      doc.restore();
+    }
+  }
   doc.y = top + (y1 - y0) * k + 8;
   doc.x = left;
-  doc.font("Helvetica").fontSize(8).fillColor("#555").text(pdfText(
-    `Analysed tiles (${features.length}); darker = higher model value; grey = analysed, none found. Lon ${x0.toFixed(2)}–${x1.toFixed(2)}, Lat ${y0.toFixed(2)}–${y1.toFixed(2)}.`));
+  if (opts.caption !== false) {
+    doc.font("Helvetica").fontSize(8).fillColor("#555").text(pdfText(
+      `Analysed tiles (${features.length}); darker = higher model value; grey = analysed, none found. Lon ${x0.toFixed(2)}–${x1.toFixed(2)}, Lat ${y0.toFixed(2)}–${y1.toFixed(2)}.`));
+  }
   doc.fillColor("black");
 }

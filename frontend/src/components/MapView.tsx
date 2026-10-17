@@ -127,6 +127,13 @@ export function MapView({ region, universe, sampled, confirmedIds, task, target,
         )}
       </MapContainer>
 
+      <div className="map-legend-wrap">
+      <button type="button" className="map-info-btn map-legend-btn" aria-label="Map legend and layers" aria-haspopup="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <path d="M12 3 2 8l10 5 10-5-10-5Z" /><path d="m2 13 10 5 10-5" opacity="0.6" />
+        </svg>
+        {sampled.size > 0 && <span className="map-legend-count">{sampled.size.toLocaleString()}</span>}
+      </button>
       <div className="map-legend" aria-label="Map legend">
         <div className="legend-toggles" role="group" aria-label="Map layers">
           <button type="button" className="chip" aria-pressed={showProxy} onClick={() => setShowProxy((v) => !v)}>Proxy layer</button>
@@ -140,6 +147,7 @@ export function MapView({ region, universe, sampled, confirmedIds, task, target,
             ? `${sampled.size.toLocaleString()} of ${universe?.features.length.toLocaleString() ?? "?"} tiles analysed by the specialist model`
             : "Run a question to see which tiles the engine analyses"}
         </p>
+      </div>
       </div>
     </div>
   );

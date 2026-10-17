@@ -19,7 +19,7 @@ from .cache import ResultCache
 from .compiler import CompileResult
 from .estimators import Estimate, FrontierAudit, SampleState, build_strata
 from .ir import CENSUS_TARGETS, CROPLAND_TARGETS, TASK_TARGETS, QueryIR, Target, Task
-from .providers.base import Check, Oracle, Provider, TileUniverse
+from .providers.base import Check, Oracle, Provider, TileUniverse, set_status_callback
 
 ENGINE_VERSION = "aeqe-0.3.0"
 
@@ -152,6 +152,7 @@ class Engine:
         self.cache = cache
         self.store = Path(store_dir)
         (self.store / "traces").mkdir(parents=True, exist_ok=True)
+        (self.store / "jobs").mkdir(parents=True, exist_ok=True)
         self.config = config or EngineConfig()
         self.jobs: dict[str, Job] = {}
         self._pool = ThreadPoolExecutor(max_workers=self.config.workers, thread_name_prefix="oracle")
@@ -259,6 +260,35 @@ class Engine:
             job.status = "failed"
             job.error = f"{type(e).__name__}: {e}"
             job.emit({"type": "error", "message": job.error})
+        finally:
+            self._archive(job)
+
+    # ------------------------------------------------------------------ persistence
+    # Finished jobs are kept on disk (summary + evidence map) so answers, maps and reports still work after
+    # the engine restarts. Live runs in memory are lost on restart; they show up as "failed: engine restarted".
+    def _job_file(self, job_id: str) -> Path:
+        return self.store / "jobs" / f"{job_id}.json"
+
+    def _archive(self, job: Job) -> None:
+        try:
+            data = {"summary": job.summary(), "evidence": self.evidence_geojson(job)}
+            tmp = self._job_file(job.id).with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, default=str))
+            tmp.replace(self._job_file(job.id))
+        except Exception:  # noqa: BLE001 — archiving must never break a run
+            pass
+
+    def archived(self, job_id: str) -> Optional[dict]:
+        """The saved summary/evidence of a finished job that is no longer in memory (or None)."""
+        if not job_id.isalnum():
+            return None
+        p = self._job_file(job_id)
+        if not p.exists():
+            return None
+        try:
+            return json.loads(p.read_text())
+        except (OSError, ValueError):
+            return None
 
     # ------------------------------------------------------------------ oracle calls
     def _call_oracle(self, oracle: Oracle, u: TileUniverse, idx: int, ir: QueryIR, scene_key: str,
@@ -310,7 +340,12 @@ class Engine:
         job.live = self.provider.is_live(ir)
         job.emit({"type": "status", "stage": "preparing",
                   "message": "Tiling the region and computing proxy scores from live data…" if job.live else "Preparing tiles…"})
-        u = self.provider.universe(ir)
+        set_status_callback(lambda msg: job.emit({"type": "status", "stage": "preparing", "message": msg,
+                                                  "elapsed_s": round(time.perf_counter() - t_start, 1)}))
+        try:
+            u = self.provider.universe(ir)
+        finally:
+            set_status_callback(None)
         oracle = self.provider.oracle(ir, sensor)
         scene_key = self.provider.scene_key(ir, sensor)
         job.universe = u
@@ -377,7 +412,9 @@ class Engine:
                 break
             elapsed = time.perf_counter() - t_start
             if job.replay_n is None:
-                if elapsed >= ir.budget_seconds:
+                # the budget includes preparing the district, but always analyse at least the pilot batch:
+                # stopping with zero tiles would give an answer with no evidence behind it
+                if elapsed >= ir.budget_seconds and state.n > 0:
                     stop_reason = "time_budget"
                     break
                 if state.n >= ir.budget_tiles:
@@ -570,6 +607,9 @@ class Engine:
             "caveats": self._caveats(ir, display) + self.provider.caveats(ir),
             "data_mode": "live" if job.live else "simulated",
             "region": (lambda r: r.to_json(geometry=False) if r else None)(self.provider.region(ir.region_id)),
+            "query": {"task": ir.task.value, "target": ir.target.value, "start": ir.start.isoformat(), "end": ir.end.isoformat(),
+                      "baseline_start": ir.baseline_start.isoformat() if ir.baseline_start else None,
+                      "confidence": ir.confidence},
         }
 
     # ------------------------------------------------------------------ find-all
@@ -596,7 +636,7 @@ class Engine:
             if job.stop_requested:
                 stop_reason = "user_stop"; break
             if job.replay_n is None:
-                if elapsed >= ir.budget_seconds:
+                if elapsed >= ir.budget_seconds and fa.n > 0:
                     stop_reason = "time_budget"; break
                 if fa.n >= ir.budget_tiles:
                     stop_reason = "tile_budget"; break

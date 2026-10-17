@@ -20,6 +20,10 @@ export class MemoryStore implements Store {
   async userById(id: string) {
     return this.users.get(id);
   }
+  async setPasswordHash(id: string, hash: string) {
+    const u = this.users.get(id);
+    if (u) this.users.set(id, { ...u, passwordHash: hash });
+  }
 
   async createProject(p: Project) {
     this.projects.set(p.id, p);

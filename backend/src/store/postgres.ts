@@ -71,6 +71,9 @@ export class PostgresStore implements Store {
     const r = await this.pool.query("SELECT * FROM users WHERE id=$1", [id]);
     return r.rows[0] ? toUser(r.rows[0]) : undefined;
   }
+  async setPasswordHash(id: string, hash: string) {
+    await this.pool.query("UPDATE users SET password_hash=$1 WHERE id=$2", [hash, id]);
+  }
 
   async createProject(p: Project) {
     await this.pool.query("INSERT INTO projects (id,owner_id,name,description,created_at) VALUES ($1,$2,$3,$4,$5)", [

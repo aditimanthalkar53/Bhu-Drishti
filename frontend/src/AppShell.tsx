@@ -14,6 +14,7 @@ import { LandingPage } from "./pages/LandingPage";
 import { MonitorsPage } from "./pages/MonitorsPage";
 import { RecipientsPage } from "./pages/RecipientsPage";
 import { ReportDetailPage, ReportsPage } from "./pages/ReportsPage";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
 import type { Notification, Region } from "./types";
@@ -49,14 +50,9 @@ function titleFor(path: string): string {
 }
 
 export function AppShell() {
-  const { user, loading, logout, loginAsGuest } = useAuth();
+  const { user, loading, logout } = useAuth();
   const navigate = useNavigate();
   const [showAuth, setShowAuth] = useState(false);
-
-  // every app page needs a session; fall back to a guest one
-  useEffect(() => {
-    if (!loading && !user && window.location.pathname.startsWith("/app")) void loginAsGuest().catch(() => undefined);
-  }, [loading, user, loginAsGuest]);
 
   // one persistent layout for every /app page, so the sidebar and background scene survive navigation
   const layout = <Shell user={user} loading={loading} onSignIn={() => setShowAuth(true)} onLogout={() => { logout(); navigate("/"); }} />;
@@ -65,6 +61,7 @@ export function AppShell() {
     <>
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/app" element={layout}>
           <Route index element={<App />} />
           <Route path="dashboard" element={<DashboardPage />} />
@@ -153,9 +150,23 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
         </div>
       </header>
       <div ref={body} className={full ? "shell-body shell-full" : "shell-body"} key={pathname}>
-        {user ? <Outlet /> : <p className="muted page">Starting a session…</p>}
+        {user ? <Outlet /> : loading ? <p className="muted page">Loading…</p> : <SignInGate />}
       </div>
     </div>
+  );
+}
+
+/** Every /app page needs an account: the website is public, the application is not. */
+function SignInGate() {
+  return (
+    <main className="page signin-gate">
+      <div className="card">
+        <h2>Sign in to use Bhu-Drishti</h2>
+        <p className="muted">The website is open to everyone. Asking questions, monitoring areas and sending reports need an account,
+          so your work is saved and every report can be traced to a person.</p>
+      </div>
+      <AuthModal onClose={() => undefined} dismissible={false} />
+    </main>
   );
 }
 
@@ -208,7 +219,7 @@ function GlobalSearch() {
   );
 }
 
-function UserMenu({ user, onSignIn, onLogout }: { user: NonNullable<HeaderProps["user"]>; onSignIn(): void; onLogout(): void }) {
+function UserMenu({ user, onLogout }: { user: NonNullable<HeaderProps["user"]>; onSignIn(): void; onLogout(): void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -219,12 +230,12 @@ function UserMenu({ user, onSignIn, onLogout }: { user: NonNullable<HeaderProps[
   return (
     <div className="menu" ref={ref}>
       <button className="btn btn-quiet user-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <span className="avatar" aria-hidden="true">{(user.guest ? "G" : user.name).slice(0, 1).toUpperCase()}</span>
-        <span className="user-name">{user.guest ? "Guest" : user.name}</span>{user.guest && <span className="guest-badge user-name">guest</span>}
+        <span className="avatar" aria-hidden="true">{user.name.slice(0, 1).toUpperCase()}</span>
+        <span className="user-name">{user.name}</span>
       </button>
       {open && (
         <div className="menu-pop" role="menu">
-          {user.guest && <button role="menuitem" className="menu-item" onClick={() => { setOpen(false); onSignIn(); }}>Sign in / create account</button>}
+          <div className="menu-head"><strong>{user.name}</strong><span className="muted small">{user.email}</span></div>
           <NavLink role="menuitem" className="menu-item" to="/app/settings" onClick={() => setOpen(false)}>Settings & API keys</NavLink>
           <NavLink role="menuitem" className="menu-item" to="/app/usage" onClick={() => setOpen(false)}>Usage</NavLink>
           <NavLink role="menuitem" className="menu-item" to="/app/audit" onClick={() => setOpen(false)}>Audit log</NavLink>

@@ -4,13 +4,31 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { EngineClient, EngineError } from "./engine-client.js";
 import { queryLimiter } from "./ratelimit.js";
 import type { QuerySession, Store } from "./store/types.js";
-import { audit, buildReportPdf, snapshot } from "./delivery.js";
+import { audit, buildReportPdf, reportAttachments, snapshot } from "./delivery.js";
 import type { Report } from "./domain.js";
-import { sendReportEmail } from "./email.js";
+import { sendReportEmail, smtpConfigured } from "./email.js";
 
 type IdParams = { Params: { id: string } };
 
-export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClient) {
+export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClient, opts: { maxConcurrentRuns: number } = { maxConcurrentRuns: 2 }) {
+  /** Runs of this user still in progress on the engine (stale "running" sessions are reconciled). */
+  async function activeRuns(userId: string): Promise<number> {
+    const recent = (await store.sessionsForUser(userId, 50))
+      .filter((s) => (s.status === "running" || s.status === "queued") && Date.now() - Date.parse(s.createdAt) < 6 * 3600_000);
+    let n = 0;
+    for (const s of recent) {
+      try {
+        const j = await engine.get<{ status: QuerySession["status"] }>(`/queries/${s.id}`);
+        if (j.status === "queued" || j.status === "running") n++;
+        else await store.updateSession(s.id, { status: j.status });
+      } catch (e) {
+        if (e instanceof EngineError && e.status === 404) await store.updateSession(s.id, { status: "failed" });
+        else n++;   // engine unreachable: be conservative
+      }
+    }
+    return n;
+  }
+
   const auth = { preHandler: app.authenticate };
 
   const sendEngineError = (reply: FastifyReply, e: unknown) => {
@@ -89,6 +107,11 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
       const p = await store.project(req.params.id);
       if (!p || p.ownerId !== req.userId) return reply.code(404).send({ error: "project not found" });
       if (!queryLimiter.check(req.userId!)) return reply.code(429).send({ error: "too many queries — wait a moment" });
+      // live runs download satellite imagery for minutes and spend provider quota: cap them per user
+      const active = await activeRuns(req.userId!);
+      if (active >= opts.maxConcurrentRuns) {
+        return reply.code(429).send({ error: `You already have ${active} analysis run(s) in progress. Wait for one to finish (or stop it) before starting another.` });
+      }
       let started: { id: string; compile: unknown; plan: unknown };
       try {
         started = await engine.post<{ id: string; compile: unknown; plan: unknown }>("/queries", { question: req.body.question, region_id: req.body.region_id, overrides: req.body.overrides ?? {} });
@@ -259,19 +282,26 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
           queryIds: [s.id], regionId: s.regionId, status: "approved", origin: "user", summary: s.answer ?? "",
           recipientIds: [], groupIds: [], approvedBy: s.userId,
         };
-        const pdf = await buildReportPdf(store, engine, adhoc);
-        await sendReportEmail(recipient, adhoc.title, adhoc.summary, pdf);
+        if (!smtpConfigured()) {
+          return reply.code(503).send({ error: "Email is not set up on the server (SMTP_USER / SMTP_PASS are missing in .env)." });
+        }
+        const files = await reportAttachments(store, engine, adhoc);
+        await sendReportEmail(recipient, adhoc.title, adhoc.summary, files);
         await audit(store, s.userId, s.userId, "query.email_report", `query:${s.id}`, { to: recipient });
-        return { ok: true, message: `Report emailed to ${recipient}.` };
+        return { ok: true, message: `Report emailed to ${recipient} (summary + technical PDF).` };
       } catch (error) {
         req.log.error({ err: error }, "Failed to email query report");
-        return reply.code(502).send({ error: "Could not send the report email. Please try again later." });
+        const msg = (error as Error).message ?? "";
+        const hint = /auth|535|credentials|Username and Password/i.test(msg) ? "the mail server rejected the login (check SMTP_USER / SMTP_PASS — Gmail needs an App Password)"
+          : /ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ESOCKET/i.test(msg) ? "the server could not reach the mail server (network or SMTP_HOST/SMTP_PORT)"
+          : "the mail server returned an error";
+        return reply.code(502).send({ error: `Could not send the report email: ${hint}.` });
       }
     },
   );
 
   // PDF of a single query (download without emailing)
-  app.get<IdParams>("/api/queries/:id/report.pdf", auth, async (req, reply) => {
+  app.get<IdParams & { Querystring: { style?: string } }>("/api/queries/:id/report.pdf", auth, async (req, reply) => {
     const s = await ownedSession(req, reply);
     if (!s) return;
     if (s.status !== "done" && s.status !== "stopped") return reply.code(409).send({ error: "the query has not finished" });
@@ -279,9 +309,10 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
       id: `q-${s.id}`, ownerId: s.userId, createdAt: new Date().toISOString(), title: s.question.slice(0, 120), queryIds: [s.id],
       regionId: s.regionId, status: "approved", origin: "user", summary: s.answer ?? "", recipientIds: [], groupIds: [],
     };
-    const pdf = await buildReportPdf(store, engine, adhoc);
+    const style = req.query.style === "simple" ? "simple" : "technical";
+    const pdf = await buildReportPdf(store, engine, adhoc, style);
     reply.header("content-type", "application/pdf");
-    reply.header("content-disposition", `attachment; filename="bhu-drishti-${s.id}.pdf"`);
+    reply.header("content-disposition", `attachment; filename="bhu-drishti-${style === "simple" ? "summary" : "technical"}-${s.id}.pdf"`);
     return reply.send(pdf);
   });
 }

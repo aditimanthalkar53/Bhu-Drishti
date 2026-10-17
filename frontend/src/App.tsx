@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "./auth";
-import { api, post } from "./api";
+import { api, ApiError, post } from "./api";
 import { MapView } from "./components/MapView";
-import { EXAMPLES, LIVE_EXAMPLES, QueryPanel } from "./components/QueryPanel";
+import { EXAMPLES, LIVE_EXAMPLES, QueryPanel, type ScopeReply } from "./components/QueryPanel";
 import { ResultPanel } from "./components/ResultPanel";
 import { unitFor } from "./format";
 import type { CompileInfo, Plan, Region, Session } from "./types";
@@ -12,7 +12,7 @@ import { useQueryRun } from "./useQueryRun";
 const DEFAULT_REGION = "in-assam-barpeta";
 
 export default function App() {
-  const { user, loginAsGuest } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [bootError, setBootError] = useState<string | null>(null);
@@ -28,6 +28,7 @@ export default function App() {
   const [budget, setBudget] = useState("");
   const [preview, setPreview] = useState<{ compile: CompileInfo; plan: Plan } | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [scope, setScope] = useState<ScopeReply | null>(null);
   const [checking, setChecking] = useState(false);
   const [starting, setStarting] = useState(false);
 
@@ -44,7 +45,6 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        if (!user) await loginAsGuest().catch(() => undefined);
         const [rs, projects, health] = await Promise.all([
           api<Region[]>("/api/regions"),
           api<{ id: string; name: string }[]>("/api/projects"),
@@ -102,7 +102,18 @@ export default function App() {
   useEffect(() => {
     setPreview(null);
     setPreviewError(null);
+    setScope(null);
   }, [question, regionId, precision, budget]);
+
+  /** Out-of-scope questions come back as a structured reply: show it as guidance, not as an error. */
+  const showScope = (e: unknown): boolean => {
+    const d = e instanceof ApiError ? e.body?.detail : null;
+    if (d && typeof d === "object" && d.kind === "out_of_scope") {
+      setScope(d as ScopeReply);
+      return true;
+    }
+    return false;
+  };
 
   const overrides = useMemo(() => {
     const o: Record<string, unknown> = {};
@@ -119,7 +130,7 @@ export default function App() {
     try {
       setPreview(await post("/api/compile", { question, region_id: regionId, overrides }));
     } catch (e) {
-      setPreviewError((e as Error).message);
+      if (!showScope(e)) setPreviewError((e as Error).message);
     } finally {
       setChecking(false);
     }
@@ -136,7 +147,7 @@ export default function App() {
       setParams((p) => { p.set("open", r.session.id); p.delete("q"); return p; }, { replace: true });
       void refreshSessions(projectId);
     } catch (e) {
-      setPreviewError((e as Error).message);
+      if (!showScope(e)) setPreviewError((e as Error).message);
     } finally {
       setStarting(false);
     }
@@ -198,7 +209,7 @@ export default function App() {
           </div>
         </div>
         <div className="explore-body" id="panel-ask" role="tabpanel" aria-labelledby="tab-ask" hidden={tab !== "ask"}>
-      <QueryPanel
+      <QueryPanel scope={scope}
         regions={regions} regionId={regionId} onRegion={setRegionId}
         question={question} onQuestion={setQuestion}
         precision={precision} onPrecision={setPrecision}
@@ -216,21 +227,30 @@ export default function App() {
       <main className="pane pane-map" aria-label="Map">
         <MapView region={regionWithGeom} universe={run.universe} sampled={run.sampled} confirmedIds={confirmed}
           task={task} target={target} unit={task ? unitFor(task, target) : ""} runKey={run.id ?? "none"} />
-        {region?.simulated ? (
-          <p className="sim-banner">
-            <strong>Simulated district.</strong> Numbers come from a generated world with known ground truth so the engine's
-            claims can be checked. Pick a real district to use live Sentinel-1/2, WorldCover, DEM and NASA data.
-          </p>
-        ) : region ? (
-          <p className="sim-banner live-banner">
-            <strong>Live data · {region.name}{region.state ? `, ${region.state}` : ""}.</strong> Satellite imagery is read from
-            Planetary Computer, Copernicus and NASA at run time — the first run in a district takes a few minutes.
-          </p>
-        ) : null}
-        {engineInfo && (
-          <p className="engine-info small">
-            Engine: {engineInfo.live_data ? "live + demo data" : "demo data only"}, {engineInfo.compiler === "rules" ? "rule-based" : engineInfo.compiler} parser
-          </p>
+        {region && (
+          <div className={`map-info ${region.simulated ? "is-sim" : "is-live"}`}>
+            <button type="button" className="map-info-btn" aria-describedby="map-info-tip"
+              aria-label={region.simulated ? "About this simulated district" : "About the live data"}>
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" />
+                <path d="M12 11v6M12 7.5v.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+              </svg>
+            </button>
+            <p id="map-info-tip" role="tooltip" className="map-info-tip">
+              {region.simulated ? (
+                <><strong>Simulated district.</strong> Numbers come from a generated world with known ground truth so the engine's
+                  claims can be checked. Pick a real district to use live Sentinel-1/2, WorldCover, DEM and NASA data.</>
+              ) : (
+                <><strong>Live data · {region.name}{region.state ? `, ${region.state}` : ""}.</strong> Satellite imagery is read from
+                  Planetary Computer, Copernicus and NASA at run time — the first run in a district takes a few minutes.</>
+              )}
+              {engineInfo && (
+                <span className="map-info-meta">
+                  Engine: {engineInfo.live_data ? "live + demo data" : "demo data only"}, {engineInfo.compiler === "rules" ? "rule-based" : engineInfo.compiler} parser
+                </span>
+              )}
+            </p>
+          </div>
         )}
       </main>
     </div>

@@ -10,15 +10,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Public+Sans:wght@400;600;800&display=swap" rel="stylesheet" />
     <meta name="theme-color" content="#050507" />
     <title>Bhu-Drishti</title>
-    <script>
-      // pick the theme before first paint so there is no dark/light flash (mirrors src/theme.tsx)
-      (function () {
-        var m = null;
-        try { m = localStorage.getItem("bd-theme"); } catch (e) {}
-        if (m !== "light" && m !== "dark") m = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-        document.documentElement.dataset.theme = m;
-      })();
-    </script>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

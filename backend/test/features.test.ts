@@ -63,7 +63,7 @@ before(async () => {
   engine = await fakeEngine();
   hook = await receiver();
   const port = (engine.server.address() as { port: number }).port;
-  app = await buildApp(loadConfig({ ENGINE_URL: `http://127.0.0.1:${port}`, JWT_SECRET: "test", MONITOR_SCHEDULER: "false",
+  app = await buildApp(loadConfig({ ENGINE_URL: `http://127.0.0.1:${port}`, JWT_SECRET: "test", ALLOW_GUEST: "true", SQLITE_PATH: ":memory:", MONITOR_SCHEDULER: "false",
     ALLOW_PRIVATE_WEBHOOKS: "true", PUBLIC_API_URL: "http://backend:4000" } as any), { logger: false });
   const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "officer@example.org", password: "password123", name: "Officer" } });
   H = { authorization: `Bearer ${reg.json().token}` };

@@ -540,3 +540,53 @@ details summary { cursor: pointer; color: var(--water-deep); font-weight: 600; }
   .app-header { padding: 0 10px; }
   .app-header-brand span { display: none; }
 }
+/* ---------------------------------------------------------------- question scope, more questions, sign-in gate */
+.scope-card { margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-m); display: grid; gap: 6px;
+  background: color-mix(in srgb, var(--water) 9%, var(--sheet)); border: 1px solid color-mix(in srgb, var(--water) 30%, transparent); }
+.scope-off_topic { background: color-mix(in srgb, var(--ochre) 9%, var(--sheet)); border-color: color-mix(in srgb, var(--ochre) 35%, transparent); }
+.scope-card .examples .chip { text-align: left; white-space: normal; }
+.chip-ghost { border-style: dashed; }
+.more-questions { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--paper) 40%, transparent); }
+.more-questions ul { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; }
+.more-questions .link-btn { text-align: left; font-weight: 500; text-decoration: none; }
+.more-questions .link-btn:hover { text-decoration: underline; }
+.signin-gate { max-width: 560px; }
+.signin-gate .modal-backdrop { background: color-mix(in srgb, var(--paper) 55%, transparent); }
+.modal-title { font-size: 1.15rem; font-weight: 800; }
+.menu-head { display: grid; padding: 6px 9px 8px; border-bottom: 1px solid var(--rule); margin-bottom: 4px; }
+/* ---------------------------------------------------------------- map info: a small (i) that reveals the data note on hover/focus */
+.map-info { position: absolute; top: 12px; left: 56px; z-index: 500; }
+.map-info-btn {
+  width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; cursor: help; padding: 0;
+  color: var(--ink); background: color-mix(in srgb, var(--paper) 85%, transparent); border: 1px solid var(--rule-strong);
+  box-shadow: var(--shadow); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+}
+.map-info.is-sim .map-info-btn { color: var(--ochre); }
+.map-info.is-live .map-info-btn { color: var(--water); }
+.map-info-tip {
+  position: absolute; top: calc(100% + 8px); left: 0; width: min(420px, calc(100vw - 90px)); margin: 0;
+  padding: 10px 12px; border-radius: var(--radius-m); font-size: 0.8125rem; line-height: 1.45; color: var(--ink);
+  background: color-mix(in srgb, var(--sheet-solid, var(--sheet)) 94%, transparent); border: 1px solid var(--rule-strong);
+  box-shadow: var(--shadow); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+  pointer-events: none;
+}
+.map-info:hover .map-info-tip, .map-info-btn:focus-visible + .map-info-tip { opacity: 1; visibility: visible; transform: none; }
+/* ---------------------------------------------------------------- map legend: a small layers button that reveals the legend on hover/focus */
+.map-legend-wrap { position: absolute; left: 12px; bottom: 28px; z-index: 500; }
+.map-legend-btn { position: relative; color: var(--ink); }
+.map-legend-count {
+  position: absolute; top: -6px; right: -10px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--water); color: #fff; font-size: 0.625rem; font-weight: 800; line-height: 18px; text-align: center;
+}
+.map-legend-wrap .map-legend {
+  position: absolute; left: 0; bottom: calc(100% + 8px); width: 300px; max-width: calc(100vw - 40px);
+  opacity: 0; visibility: hidden; transform: translateY(4px); transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+}
+/* an invisible bridge so the pointer can travel from the button into the panel without it closing */
+.map-legend-wrap .map-legend::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 10px; }
+.map-legend-wrap:hover .map-legend, .map-legend-wrap:focus-within .map-legend { opacity: 1; visibility: visible; transform: none; }
+.map-info-meta { display: block; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.75rem; }
+/* forgot-password form inside the sign-in dialog */
+.modal-form.forgot { margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--line, rgba(127,127,127,.25)); }

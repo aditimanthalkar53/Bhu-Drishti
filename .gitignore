@@ -5,6 +5,10 @@ __pycache__/
 .pytest_cache/
 .venv/
 engine/data/
+backend/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 .env
 *.tsbuildinfo
 
@@ -19,3 +23,4 @@ docker-compose.override.yml
 *.HDF5
 *.hdf5
 *.nc4
+backups/

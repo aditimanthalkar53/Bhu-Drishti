@@ -42,7 +42,7 @@ from pydantic import BaseModel
 
 from . import __version__
 from .cache import ResultCache
-from .compiler import CompileError, CompileResult, LLMCompiler, compile_question
+from .compiler import CompileError, CompileResult, LLMCompiler, OutOfScopeError, compile_question
 from .engine import Engine, EngineConfig
 from .ir import QueryIR
 
@@ -132,9 +132,33 @@ def _compile(req: CompileRequest | QueryRequest) -> CompileResult:
     if r is None:
         raise HTTPException(422, f"unknown region '{req.region_id}'")
     try:
-        return compile_question(req.question, region_id=req.region_id, overrides=req.overrides, live=not r.simulated)
+        cr = compile_question(req.question, region_id=req.region_id, overrides=req.overrides, live=not r.simulated)
+    except OutOfScopeError as e:
+        raise HTTPException(422, e.reply.to_json()) from e
     except CompileError as e:
         raise HTTPException(422, str(e)) from e
+    other = mentioned_region(req.question, req.region_id)
+    if other is not None:
+        cr.warnings.append(f"Your question mentions {other.name}{', ' + other.state if other.state else ''}, but the selected area is "
+                           f"{r.name}. The answer is for {r.name} — switch the area to ask about {other.name}.")
+        cr.suggested_region = other.to_json(geometry=False)
+    return cr
+
+
+def mentioned_region(question: str, current: str):
+    """A different district named in the question (whole-word match, names of 4+ letters), if any."""
+    t = question.lower()
+    cur = provider.region(current)
+    if cur is not None and re.search(rf"\b{re.escape(cur.name.lower())}\b", t):
+        return None
+    best = None
+    for reg in provider.regions():
+        n = reg.name.lower()
+        if reg.id == current or len(n) < 4 or reg.simulated:
+            continue
+        if re.search(rf"\b{re.escape(n)}\b", t) and (best is None or len(n) > len(best.name)):
+            best = reg
+    return best
 
 
 def _live():
@@ -263,13 +287,25 @@ def list_queries():
             for j in sorted(engine.jobs.values(), key=lambda j: -j.created_at)]
 
 
+def _archived(job_id: str) -> Optional[dict]:
+    """Finished jobs from before an engine restart are served from disk."""
+    return None if job_id in engine.jobs else engine.archived(job_id)
+
+
 @app.get("/queries/{job_id}")
 def get_query(job_id: str):
+    if (a := _archived(job_id)) is not None:
+        return a["summary"]
     return _job(job_id).summary()
 
 
 @app.get("/queries/{job_id}/events")
 async def events(job_id: str, request: Request, since: int = 0):
+    if (a := _archived(job_id)) is not None:   # finished before a restart: send the final state, then end
+        res = a["summary"].get("result")
+        payload = json.dumps({"seq": 0, "type": "result", **res}, default=str) if res else None
+        body = (f"event: result\ndata: {payload}\n\n" if payload else "") + "event: end\ndata: {}\n\n"
+        return StreamingResponse(iter([body]), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
     job = _job(job_id)
 
     async def gen():
@@ -301,17 +337,22 @@ def stop(job_id: str):
 
 @app.get("/queries/{job_id}/universe")
 def universe(job_id: str):
+    if _archived(job_id) is not None:
+        return {"type": "FeatureCollection", "features": []}
     return engine.universe_geojson(_job(job_id))
 
 
 @app.get("/queries/{job_id}/evidence")
 def evidence(job_id: str):
+    if (a := _archived(job_id)) is not None:
+        return a["evidence"]
     return engine.evidence_geojson(_job(job_id))
 
 
 @app.get("/queries/{job_id}/trace")
 def trace(job_id: str):
-    _job(job_id)
+    if _archived(job_id) is None:
+        _job(job_id)
     p = engine.trace_path(job_id)
     if not p.exists():
         raise HTTPException(409, "trace is written when the run finishes")

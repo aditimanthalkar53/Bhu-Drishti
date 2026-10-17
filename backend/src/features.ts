@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { audit, buildReportPdf, deliveryMode, logDelivery, notify, reportPayload, reportRecipients, reportSummary, sendReport } from "./delivery.js";
+import { audit, autoDeliver, autoEmailTargets, buildReportPdf, deliveryMode, logDelivery, notify, reportPayload, reportRecipients, reportSummary, sendReport } from "./delivery.js";
 import { WEBHOOK_EVENTS, type AOI, type Alert, type AuditEntry, type Delivery, type Group, type Monitor, type Notification,
   type Recipient, type Report, type Webhook } from "./domain.js";
 import { smtpConfigured } from "./email.js";
@@ -289,6 +289,7 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     await audit(store, req.userId!, req.userId!, "report.create", `report:${r.id}`, { queries: r.queryIds }, await actorName(req));
     const { emit } = await import("./webhooks.js");
     await emit(store, req.userId!, "report.ready", reportPayload(r, await reportRecipients(store, r), opts.publicUrl));
+    void autoDeliver(store, engine, r, req.log);
     return reply.code(201).send(r);
   });
 
@@ -321,12 +322,13 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     return { ok: true };
   });
 
-  app.get<IdParams>("/api/reports/:id/pdf", auth, async (req, reply) => {
+  app.get<IdParams & { Querystring: { style?: string } }>("/api/reports/:id/pdf", auth, async (req, reply) => {
     const r = await owned<Report>("report", req, reply);
     if (!r) return;
-    const pdf = await buildReportPdf(store, engine, r);
+    const style = req.query.style === "simple" ? "simple" : "technical";
+    const pdf = await buildReportPdf(store, engine, r, style);
     reply.header("content-type", "application/pdf");
-    reply.header("content-disposition", `inline; filename="bhu-drishti-report-${r.id}.pdf"`);
+    reply.header("content-disposition", `inline; filename="bhu-drishti-${style === "simple" ? "summary" : "technical"}-${r.id}.pdf"`);
     return reply.send(pdf);
   });
 
@@ -414,6 +416,7 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
       await store.putRecord("report", r);
       await emit(store, req.userId!, "report.ready", reportPayload(r, await reportRecipients(store, r), opts.publicUrl));
       made.push(r);
+      void autoDeliver(store, engine, r, req.log);
     }
     await audit(store, req.userId!, req.userId!, "report.generate", "bulletin", { reports: made.length });
     return { created: made.length, reports: made };
@@ -507,6 +510,7 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
   app.get("/api/settings/integrations", auth, async () => ({
     report_delivery: deliveryMode(), smtp_configured: smtpConfigured(), public_url: opts.publicUrl,
     webhook_events: WEBHOOK_EVENTS, allow_private_webhooks: opts.allowPrivateWebhooks,
+    auto_email: autoEmailTargets(),
   }));
 
   app.post<{ Body: { email?: string } | null }>("/api/settings/test-email", auth, async (req, reply) => {

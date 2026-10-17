@@ -9,6 +9,7 @@ offline demo and the Planetary Computer adapter are interchangeable.
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -16,6 +17,23 @@ from typing import Any, Optional
 import numpy as np
 
 from ..ir import QueryIR, Target
+
+
+_status = threading.local()
+
+
+def set_status_callback(cb) -> None:
+    """The engine installs a per-job callback (job thread only) so slow preparation can report progress."""
+    _status.cb = cb
+
+
+def report_status(message: str) -> None:
+    cb = getattr(_status, "cb", None)
+    if cb is not None:
+        try:
+            cb(message)
+        except Exception:  # noqa: BLE001 — progress messages must never break a run
+            pass
 
 
 @dataclass

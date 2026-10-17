@@ -2,11 +2,21 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authLimiter } from "./ratelimit.js";
-import type { Store, User } from "./store/types.js";
+import { sendMail, smtpConfigured } from "./email.js";
+import type { Store, StoredRecord, User } from "./store/types.js";
+
+const RESET_TTL_MS = 30 * 60_000;
+
+/** Invalidate every login token of this user issued before now (password change/reset, "sign out everywhere"). */
+export async function revokeTokens(store: Store, userId: string) {
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  await store.putRecord("tokens", { id: userId, ownerId: userId, createdAt: new Date().toISOString(), validAfter: now });
+}
 
 declare module "fastify" {
   interface FastifyRequest {
     userId?: string;
+    tokenIat?: number;
   }
   interface FastifyInstance {
     authenticate: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
@@ -30,8 +40,22 @@ export function publicUser(u: User) {
  * Accepts, in order: `x-api-key` header, `Authorization: Bearer <jwt>`, or `?token=<jwt>`
  * (the query form exists because browser EventSource cannot send headers).
  */
-export function registerAuth(app: FastifyInstance, store: Store) {
+export function registerAuth(app: FastifyInstance, store: Store, opts: { allowGuest: boolean } = { allowGuest: false }) {
   app.decorate("authenticate", async (req: FastifyRequest, reply: FastifyReply) => {
+    await authenticateInner(req, reply);
+    if (reply.sent || !req.userId) return;
+    // the application requires a real account: tokens of old guest sessions no longer work
+    const u = await store.userById(req.userId);
+    if (!u) return reply.code(401).send({ error: "account not found — please sign in again" });
+    if (u.passwordHash === null && !opts.allowGuest) return reply.code(401).send({ error: "please sign in with an account" });
+    // server-side sign-out: tokens issued before a password change / "sign out everywhere" are refused
+    if (req.tokenIat !== undefined) {
+      const rev = await store.getRecord<StoredRecord & { validAfter: number }>("tokens", u.id);
+      if (rev && req.tokenIat * 1000 < rev.validAfter) return reply.code(401).send({ error: "your session has ended — please sign in again" });
+    }
+  });
+
+  async function authenticateInner(req: FastifyRequest, reply: FastifyReply) {
     const apiKey = req.headers["x-api-key"];
     if (typeof apiKey === "string" && apiKey) {
       const k = await store.apiKeyByHash(sha256(apiKey));
@@ -45,16 +69,69 @@ export function registerAuth(app: FastifyInstance, store: Store) {
     else if (typeof (req.query as any)?.token === "string") token = (req.query as any).token;
     if (!token) return reply.code(401).send({ error: "authentication required" });
     try {
-      const payload = app.jwt.verify<{ sub: string }>(token);
+      const payload = app.jwt.verify<{ sub: string; iat?: number }>(token);
       req.userId = payload.sub;
+      req.tokenIat = payload.iat;
     } catch {
       return reply.code(401).send({ error: "invalid or expired token" });
     }
-  });
+  }
 }
 
-export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGuest: boolean }) {
-  const issue = (u: User) => ({ token: app.jwt.sign({ sub: u.id, name: u.name }, { expiresIn: "7d" }), user: publicUser(u) });
+export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGuest: boolean; appUrl?: string }) {
+  const issue = (u: User) => ({ token: app.jwt.sign({ sub: u.id, name: u.name }, { expiresIn: "24h" }), user: publicUser(u) });
+
+  // ---- forgotten password: email a single-use link valid for 30 minutes. Always answers the same way,
+  // so the endpoint cannot be used to find out which emails have accounts.
+  app.post<{ Body: { email: string } }>("/api/auth/forgot", {
+    schema: { body: { type: "object", required: ["email"], properties: { email: { type: "string", maxLength: 200 } } } },
+  }, async (req, reply) => {
+    if (!authLimiter.check(`forgot:${req.ip}`)) return reply.code(429).send({ error: "too many requests — try again in a minute" });
+    const generic = { ok: true, message: "If an account exists for that email, a reset link is on its way. It is valid for 30 minutes." };
+    if (!smtpConfigured()) {   // checked before the lookup, so the answer never depends on whether the account exists
+      req.log.error("password reset requested but SMTP is not configured");
+      return reply.code(503).send({ error: "Password reset by email is not available right now. Contact your administrator." });
+    }
+    const u = await store.userByEmail(req.body.email.trim().toLowerCase());
+    if (!u || !u.passwordHash) return generic;
+    const token = randomBytes(32).toString("base64url");
+    await store.putRecord("reset", { id: sha256(token), ownerId: u.id, createdAt: new Date().toISOString(), expiresAt: Date.now() + RESET_TTL_MS });
+    const link = `${opts.appUrl ?? "http://localhost:8081"}/reset-password?token=${encodeURIComponent(token)}`;
+    try {
+      await sendMail({
+        to: u.email, subject: "Reset your Bhu-Drishti password",
+        text: `Hello ${u.name},\n\nUse this link to choose a new password (valid for 30 minutes):\n${link}\n\nIf you did not ask for this, ignore this email — your password stays the same.\n\n— Bhu-Drishti`,
+        html: `<p>Hello ${u.name.replace(/[<>&]/g, "")},</p><p><a href="${link}">Choose a new password</a> (valid for 30 minutes).</p>` +
+          `<p style="color:#666;font-size:12px">If you did not ask for this, ignore this email — your password stays the same.</p>`,
+      });
+    } catch (e) {
+      req.log.error({ err: e }, "password reset email failed");
+    }
+    return generic;
+  });
+
+  app.post<{ Body: { token: string; password: string } }>("/api/auth/reset", {
+    schema: { body: { type: "object", required: ["token", "password"],
+      properties: { token: { type: "string", minLength: 20, maxLength: 200 }, password: { type: "string", minLength: 8, maxLength: 200 } } } },
+  }, async (req, reply) => {
+    if (!authLimiter.check(`reset:${req.ip}`)) return reply.code(429).send({ error: "too many requests — try again in a minute" });
+    const id = sha256(req.body.token);
+    const rec = await store.getRecord<StoredRecord & { expiresAt: number }>("reset", id);
+    if (!rec || rec.expiresAt < Date.now()) {
+      if (rec) await store.deleteRecord("reset", id);
+      return reply.code(400).send({ error: "This reset link is invalid or has expired. Ask for a new one." });
+    }
+    await store.deleteRecord("reset", id);   // single use
+    await store.setPasswordHash(rec.ownerId, await bcrypt.hash(req.body.password, 10));
+    await revokeTokens(store, rec.ownerId);
+    const u = await store.userById(rec.ownerId);
+    return issue(u!);
+  });
+
+  app.post("/api/auth/logout-everywhere", { preHandler: app.authenticate }, async (req) => {
+    await revokeTokens(store, req.userId!);
+    return { ok: true };
+  });
 
   app.post<{ Body: { email: string; password: string; name?: string } }>("/api/auth/register", {
     schema: {
@@ -103,6 +180,21 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
     const u = await store.userById(req.userId!);
     if (!u) return reply.code(404).send({ error: "user not found" });
     return publicUser(u);
+  });
+
+  app.post<{ Body: { current: string; next: string } }>("/api/auth/password", {
+    preHandler: app.authenticate,
+    schema: { body: { type: "object", required: ["current", "next"],
+      properties: { current: { type: "string", maxLength: 200 }, next: { type: "string", minLength: 8, maxLength: 200 } } } },
+  }, async (req, reply) => {
+    if (!authLimiter.check(`pw:${req.userId}`)) return reply.code(429).send({ error: "too many requests — try again in a minute" });
+    const u = await store.userById(req.userId!);
+    if (!u?.passwordHash || !(await bcrypt.compare(req.body.current, u.passwordHash))) {
+      return reply.code(401).send({ error: "current password is wrong" });
+    }
+    await store.setPasswordHash(u.id, await bcrypt.hash(req.body.next, 10));
+    await revokeTokens(store, u.id);       // sign out every other device
+    return { ok: true, ...issue(u) };      // …but keep this one signed in
   });
 
   // API keys for programmatic access (shown once at creation)

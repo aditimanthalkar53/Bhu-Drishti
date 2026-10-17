@@ -99,13 +99,34 @@ git-ignored.
 ## Testing
 
 ```bash
-cd engine && pytest                         # 46 offline tests: estimators, compiler, adapters (mocked HTTP), masks, census, advisory
-cd backend && npm test                      # 14 tests: auth, ownership, monitors → alerts → approval → signed webhooks → n8n callback, PDFs
+cd engine && pytest                         # 65 offline tests: estimators, compiler, adapters (mocked HTTP), masks, census, advisory, job persistence
+cd backend && npm test                      # 18 tests: SQLite accounts, no guests, password change / reset / sign-out everywhere, ownership, monitors → alerts → approval → signed webhooks → n8n callback, PDFs
 cd frontend && npm run build                # type-check + production build
 cd engine && python scripts/smoke_sources.py          # bounded live, read-only check of every provider
 cd engine && python scripts/live_e2e.py flood|fire|fire_find|built|burned   # live end-to-end runs
 cd engine && python -m bench.coverage --runs 100 && python -m bench.report  # coverage benchmark (simulated districts)
 ```
+
+## Accounts, questions and reports
+
+* **Login required for the app.** The website (`/`) is public; every `/app` page needs an account. Accounts (email,
+  bcrypt password hash), projects, sessions and reports are stored in **SQLite** (`SQLITE_PATH`, default
+  `backend/data/bhu-drishti.sqlite`, git-ignored; Docker keeps it in the `backend-data` volume). There are no guest
+  sessions. Users can change their password under Settings. Set `DATABASE_URL` to use Postgres instead.
+* **Ask in your own words.** The parser understands many phrasings ("is farmland under water right now", "parali
+  burning this week", "new houses since 2021"). Questions outside the scope (air quality, weather, forests, cricket…) get
+  a clear "not available here" reply with suggestions instead of an error, and naming another district in the question
+  offers to switch the area.
+* **Two PDFs per report.** A plain-language *summary* (headline in everyday words, how sure we are, map, what it means,
+  what to do now) and the full *technical* report. Download either from a result, History or the report page
+  (`?style=simple|technical`).
+* **Forgotten passwords.** "Forgot password?" in the sign-in dialog emails a single-use link (valid 30 minutes) to
+  `PUBLIC_APP_URL/reset-password`. It needs SMTP. The answer is the same whether or not the email has an account.
+  Resetting or changing a password signs out every other device, and Settings has "Sign out on all devices".
+  Login sessions last 24 hours.
+* **Automatic email.** Every generated report (from Explore, a monitor or the daily bulletin) is emailed with both
+  PDFs to `REPORT_AUTO_EMAIL` (comma-separated) as soon as it is created, independent of the approval step for
+  officials. Each send is logged in the report's delivery log and the audit log.
 
 ## n8n report delivery
 
@@ -120,6 +141,25 @@ cd engine && python -m bench.coverage --runs 100 && python -m bench.report  # co
 
 Without n8n (`REPORT_DELIVERY=smtp`, the default) the backend emails approved reports itself. Either way a human approves
 every report before an official receives it, and each delivery is logged and audited.
+
+## Production
+
+What the repo already does: only the `web` container is published (engine, backend and n8n listen on 127.0.0.1),
+healthchecks and `restart: unless-stopped` on every service, security headers and a CSP in `frontend/nginx.conf`,
+rate-limited auth, single-use password-reset links, server-side sign-out, per-user limits on parallel analyses,
+finished engine jobs saved to disk (answers, maps and PDFs survive an engine restart), the backend refuses to start
+with a default `JWT_SECRET`, and CI (`.github/workflows/ci.yml`) runs every test suite and the Docker build.
+
+Checklist for a server:
+
+1. A Linux host with normal Docker networking, `git clone`, `cp .env.example .env`.
+2. In `.env`: a long random `JWT_SECRET` (`openssl rand -base64 48`), your own data-provider keys, real SMTP
+   (a transactional email service, not a personal Gmail), `REPORT_AUTO_EMAIL` and `PUBLIC_APP_URL`/`WEB_ORIGIN` set to
+   `https://your-domain`, `WEB_PORT=127.0.0.1:8080`, `TRUST_PROXY=2`.
+3. `docker compose up -d --build`, then HTTPS in front with `deploy/nginx-https.conf.example` and certbot.
+4. Backups: `./scripts/backup.sh` daily from cron (SQLite snapshot + engine jobs/areas, keeps 14), copy `backups/`
+   off the server; `./scripts/restore.sh backups/<timestamp>` restores one.
+5. Check `docker compose ps` (all *healthy*) and Settings → Data sources in the app.
 
 ## How the statistics work
 
