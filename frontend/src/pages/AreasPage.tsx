@@ -1,6 +1,8 @@
 import "leaflet/dist/leaflet.css";
 import { useState } from "react";
-import { CircleMarker, MapContainer, Polygon, Polyline, TileLayer, useMapEvents } from "react-leaflet";
+import { CircleMarker, MapContainer, Polygon, Polyline, useMapEvents } from "react-leaflet";
+import { BaseLayers } from "../components/BaseLayers";
+import { cssVar, useTheme } from "../theme";
 import { Link } from "react-router-dom";
 import { del, post } from "../api";
 import { RegionPicker } from "../components/RegionPicker";
@@ -12,6 +14,7 @@ type Mode = "district" | "draw" | "upload";
 export function AreasPage() {
   const aois = useData<AOI[]>("/api/aois");
   const regions = useData<Region[]>("/api/regions");
+  useTheme(); // re-render on theme change so the drawn shape picks up the new accent colour
   const [mode, setMode] = useState<Mode>("district");
   const [regionId, setRegionId] = useState("");
   const [name, setName] = useState("");
@@ -85,10 +88,10 @@ export function AreasPage() {
             <p className="muted small">Click on the map to add corners; the outline closes automatically. Areas up to 120,000 km².</p>
             <div className="draw-map">
               <MapContainer center={[26.3, 91.0]} zoom={8} className="map">
-                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
+                <BaseLayers />
                 <Clicker onClick={(p) => setPts((x) => [...x, p])} />
-                {pts.length >= 3 ? <Polygon positions={pts} pathOptions={{ color: "#1d5fb4" }} /> : pts.length === 2 ? <Polyline positions={pts} /> : null}
-                {pts.map((p, i) => <CircleMarker key={i} center={p} radius={4} pathOptions={{ color: "#0f3f7d" }} />)}
+                {pts.length >= 3 ? <Polygon positions={pts} pathOptions={{ color: cssVar("--water") }} /> : pts.length === 2 ? <Polyline positions={pts} /> : null}
+                {pts.map((p, i) => <CircleMarker key={i} center={p} radius={4} pathOptions={{ color: cssVar("--water-deep") }} />)}
               </MapContainer>
             </div>
             <div className="row-actions">

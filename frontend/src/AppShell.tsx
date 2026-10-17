@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
-import { NavLink, Route, Routes, useNavigate } from "react-router-dom";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, post } from "./api";
 import { useAuth } from "./auth";
 import { AuthModal } from "./components/AuthModal";
@@ -16,20 +16,37 @@ import { RecipientsPage } from "./pages/RecipientsPage";
 import { ReportDetailPage, ReportsPage } from "./pages/ReportsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
-import type { Notification } from "./types";
+import type { Notification, Region } from "./types";
 import App from "./App";
+import { gsap, pageEnter, useGsap } from "./motion";
+import { ThemeToggle } from "./theme";
 
-const NAV = [
-  { to: "/app/dashboard", label: "Dashboard" },
-  { to: "/app", label: "Explore", end: true },
-  { to: "/app/areas", label: "Areas" },
-  { to: "/app/monitors", label: "Monitors" },
-  { to: "/app/alerts", label: "Alerts" },
-  { to: "/app/reports", label: "Reports" },
-  { to: "/app/recipients", label: "Recipients" },
-  { to: "/app/history", label: "History" },
-  { to: "/app/data", label: "Data" },
+const AmbientField = lazy(() => import("./components/three/AmbientField"));
+
+const ico = (d: string): ReactNode => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
+);
+const NAV: { to: string; label: string; end?: boolean; icon: ReactNode; group: string }[] = [
+  { to: "/app/dashboard", label: "Dashboard", icon: ico("M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z"), group: "Overview" },
+  { to: "/app", label: "Explore", end: true, icon: ico("M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm3.5-12.5-2 5-5 2 2-5 5-2Z"), group: "Overview" },
+  { to: "/app/areas", label: "Areas", icon: ico("M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21Zm0-8.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"), group: "Monitoring" },
+  { to: "/app/monitors", label: "Monitors", icon: ico("M3 12h4l3-8 4 16 3-8h4"), group: "Monitoring" },
+  { to: "/app/alerts", label: "Alerts", icon: ico("M12 3 2 20h20L12 3Zm0 6v5m0 3v.5"), group: "Monitoring" },
+  { to: "/app/reports", label: "Reports", icon: ico("M6 3h9l4 4v14H6V3Zm8 0v5h5M9 13h6M9 17h6"), group: "Delivery" },
+  { to: "/app/recipients", label: "Recipients", icon: ico("M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1m13-9a3 3 0 1 0 0-6M21 19v-1a4 4 0 0 0-3-3.9M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"), group: "Delivery" },
+  { to: "/app/history", label: "History", icon: ico("M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2"), group: "Data" },
+  { to: "/app/data", label: "Data sources", icon: ico("M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Zm0 0v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"), group: "Data" },
 ];
+const TITLES: Record<string, string> = {
+  "/app/settings": "Settings & API keys", "/app/usage": "Usage", "/app/audit": "Audit log",
+};
+function titleFor(path: string): string {
+  const exact = NAV.find((n) => n.to === path);
+  if (exact) return exact.label;
+  if (TITLES[path]) return TITLES[path];
+  const prefix = NAV.filter((n) => !n.end && path.startsWith(n.to + "/")).sort((x, y) => y.to.length - x.to.length)[0];
+  return prefix?.label ?? "Bhu-Drishti";
+}
 
 export function AppShell() {
   const { user, loading, logout, loginAsGuest } = useAuth();
@@ -41,30 +58,28 @@ export function AppShell() {
     if (!loading && !user && window.location.pathname.startsWith("/app")) void loginAsGuest().catch(() => undefined);
   }, [loading, user, loginAsGuest]);
 
-  const shell = (page: ReactElement, full = false) => (
-    <div className="shell">
-      <AppHeader user={user} loading={loading} onSignIn={() => setShowAuth(true)} onLogout={() => { logout(); navigate("/"); }} />
-      <div className={full ? "shell-body shell-full" : "shell-body"}>{user ? page : <p className="muted page">Starting a session…</p>}</div>
-    </div>
-  );
+  // one persistent layout for every /app page, so the sidebar and background scene survive navigation
+  const layout = <Shell user={user} loading={loading} onSignIn={() => setShowAuth(true)} onLogout={() => { logout(); navigate("/"); }} />;
 
   return (
     <>
       <Routes>
         <Route path="/" element={<LandingPage />} />
-        <Route path="/app" element={shell(<App />, true)} />
-        <Route path="/app/dashboard" element={shell(<DashboardPage />)} />
-        <Route path="/app/areas" element={shell(<AreasPage />)} />
-        <Route path="/app/monitors" element={shell(<MonitorsPage />)} />
-        <Route path="/app/alerts" element={shell(<AlertsPage />)} />
-        <Route path="/app/reports" element={shell(<ReportsPage />)} />
-        <Route path="/app/reports/:id" element={shell(<ReportDetailPage />)} />
-        <Route path="/app/recipients" element={shell(<RecipientsPage />)} />
-        <Route path="/app/history" element={shell(<HistoryPage />)} />
-        <Route path="/app/data" element={shell(<DataCatalogPage />)} />
-        <Route path="/app/settings" element={shell(<SettingsPage />)} />
-        <Route path="/app/usage" element={shell(<UsagePage />)} />
-        <Route path="/app/audit" element={shell(<AuditPage />)} />
+        <Route path="/app" element={layout}>
+          <Route index element={<App />} />
+          <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="areas" element={<AreasPage />} />
+          <Route path="monitors" element={<MonitorsPage />} />
+          <Route path="alerts" element={<AlertsPage />} />
+          <Route path="reports" element={<ReportsPage />} />
+          <Route path="reports/:id" element={<ReportDetailPage />} />
+          <Route path="recipients" element={<RecipientsPage />} />
+          <Route path="history" element={<HistoryPage />} />
+          <Route path="data" element={<DataCatalogPage />} />
+          <Route path="settings" element={<SettingsPage />} />
+          <Route path="usage" element={<UsagePage />} />
+          <Route path="audit" element={<AuditPage />} />
+        </Route>
         <Route path="*" element={<main className="boot-error"><h1>Page not found</h1><a className="btn" href="/app/dashboard">Go to the dashboard</a></main>} />
       </Routes>
       {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
@@ -79,29 +94,117 @@ interface HeaderProps {
   onLogout(): void;
 }
 
-function AppHeader({ user, loading, onSignIn, onLogout }: HeaderProps) {
+function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
+  const { pathname } = useLocation();
+  const full = pathname === "/app" || pathname === "/app/";
+  const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(false), [pathname]);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
+  }, [open]);
+  const groups = [...new Set(NAV.map((n) => n.group))];
+  const body = useRef<HTMLDivElement>(null);
+  const side = useRef<HTMLElement>(null);
+  useGsap(body, pageEnter, [pathname]);
+  useGsap(side, (el) => {
+    gsap.from(el.querySelectorAll(".brand-link, .side-label, .side-link"), { x: -16, autoAlpha: 0, duration: 0.6, stagger: 0.03, clearProps: "all" });
+  });
   return (
-    <header className="app-header">
-      <a className="app-header-brand" href="/">
-        <Logo />
-        <span>Bhu-Drishti</span>
-      </a>
-      <nav className="app-nav" aria-label="Main">
-        {NAV.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `app-nav-link ${isActive ? "active" : ""}`}>{n.label}</NavLink>
-        ))}
-      </nav>
-      <div className="app-header-right">
-        {user && <Bell />}
-        {!loading && (
-          user ? (
-            <UserMenu user={user} onSignIn={onSignIn} onLogout={onLogout} />
-          ) : (
-            <button className="btn btn-primary" onClick={onSignIn}>Sign in</button>
-          )
-        )}
+    <div className="shell">
+      <Suspense fallback={null}><AmbientField /></Suspense>
+      <aside ref={side} className={`sidebar ${open ? "open" : ""}`} aria-label="Primary">
+        <a className="brand-link" href="/">
+          <Logo size={30} />
+          <span>Bhu-Drishti<small>Satellite flood intelligence</small></span>
+        </a>
+        <nav className="side-nav" aria-label="Main">
+          {groups.map((g) => (
+            <div key={g} className="side-nav">
+              <span className="side-label">{g}</span>
+              {NAV.filter((n) => n.group === g).map((n) => (
+                <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `side-link ${isActive ? "active" : ""}`}>{n.icon}{n.label}</NavLink>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <div className="side-foot">
+          <NavLink to="/app/settings" className={({ isActive }) => `side-link ${isActive ? "active" : ""}`}>
+            {ico("M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0-12v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1")}Settings
+          </NavLink>
+        </div>
+      </aside>
+      {open && <div className="side-scrim" onClick={() => setOpen(false)} aria-hidden="true" />}
+      <header className="topbar">
+        <button className="btn btn-quiet menu-toggle" aria-label="Open navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+          {ico("M4 6h16M4 12h16M4 18h16")}
+        </button>
+        <h1>{titleFor(pathname)}</h1>
+        {user && <GlobalSearch />}
+        <div className="topbar-right">
+          <ThemeToggle />
+          {user && <Bell />}
+          {!loading && (
+            user ? <UserMenu user={user} onSignIn={onSignIn} onLogout={onLogout} />
+              : <button className="btn btn-primary" onClick={onSignIn}>Sign in</button>
+          )}
+        </div>
+      </header>
+      <div ref={body} className={full ? "shell-body shell-full" : "shell-body"} key={pathname}>
+        {user ? <Outlet /> : <p className="muted page">Starting a session…</p>}
       </div>
-    </header>
+    </div>
+  );
+}
+
+/** Search districts (from /api/regions) and pages; choosing a district opens it in Explore. */
+function GlobalSearch() {
+  const navigate = useNavigate();
+  const [q, setQ] = useState("");
+  const [regions, setRegions] = useState<Region[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [sel, setSel] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  const load = () => { if (!regions) api<Region[]>("/api/regions").then(setRegions).catch(() => setRegions([])); };
+  const term = q.trim().toLowerCase();
+  const pages = term ? NAV.filter((n) => n.label.toLowerCase().includes(term)).slice(0, 4) : [];
+  const places = term && regions
+    ? regions.filter((r) => `${r.name} ${r.state ?? ""}`.toLowerCase().includes(term)).slice(0, 8) : [];
+  const items = [
+    ...pages.map((p) => ({ key: p.to, label: p.label, hint: "Page", go: () => navigate(p.to) })),
+    ...places.map((r) => ({ key: r.id, label: r.name, hint: r.state ?? (r.simulated ? "Demo" : ""), go: () => navigate(`/app?region=${encodeURIComponent(r.id)}`) })),
+  ];
+  const choose = (i: number) => { items[i]?.go(); setOpen(false); setQ(""); };
+  return (
+    <div className="gsearch" ref={ref} role="search">
+      {ico("m21 21-4.3-4.3M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z")}
+      <input type="search" placeholder="Search districts or pages…" aria-label="Search districts or pages" aria-expanded={open}
+        value={q} onFocus={() => { load(); setOpen(true); }}
+        onChange={(e) => { setQ(e.target.value); setSel(0); setOpen(true); }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); setSel((i) => Math.min(i + 1, items.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setSel((i) => Math.max(i - 1, 0)); }
+          else if (e.key === "Enter") { e.preventDefault(); choose(sel); }
+          else if (e.key === "Escape") setOpen(false);
+        }} />
+      {open && term && (
+        <ul className="gsearch-list" role="listbox">
+          {items.length === 0 && <li className="gsearch-group">{regions ? "No matches" : "Loading…"}</li>}
+          {items.map((it, i) => (
+            <li key={it.key} role="option" aria-selected={i === sel} onMouseEnter={() => setSel(i)} onMouseDown={(e) => { e.preventDefault(); choose(i); }}>
+              <span>{it.label}</span><span className="muted small">{it.hint}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -115,8 +218,9 @@ function UserMenu({ user, onSignIn, onLogout }: { user: NonNullable<HeaderProps[
   }, []);
   return (
     <div className="menu" ref={ref}>
-      <button className="btn btn-quiet" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        {user.guest ? "Guest" : user.name}{user.guest && <span className="guest-badge">guest</span>} ▾
+      <button className="btn btn-quiet user-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className="avatar" aria-hidden="true">{(user.guest ? "G" : user.name).slice(0, 1).toUpperCase()}</span>
+        <span className="user-name">{user.guest ? "Guest" : user.name}</span>{user.guest && <span className="guest-badge user-name">guest</span>}
       </button>
       {open && (
         <div className="menu-pop" role="menu">
@@ -183,12 +287,13 @@ export function Logo({ size = 22 }: { size?: number }) {
   // an eye over a field grid: "Bhu-Drishti" = sight over the land
   return (
     <svg viewBox="0 0 32 32" width={size} height={size} aria-hidden="true">
-      <rect width="32" height="32" rx="7" fill="var(--ink)" />
-      <g stroke="var(--paper)" strokeWidth="1" opacity="0.5">
+      <defs><linearGradient id="bd-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style={{ stopColor: "var(--water)" }} /><stop offset="1" style={{ stopColor: "var(--violet)" }} /></linearGradient></defs>
+      <rect width="32" height="32" rx="8" fill="url(#bd-g)" />
+      <g stroke="#fff" strokeWidth="1" opacity="0.45">
         <path d="M4 22h24M4 26h24M10 18v10M16 18v10M22 18v10" />
       </g>
-      <path d="M5 13c3-5 7-7 11-7s8 2 11 7c-3 5-7 7-11 7s-8-2-11-7Z" fill="none" stroke="var(--paper)" strokeWidth="1.6" />
-      <circle cx="16" cy="13" r="3.6" fill="var(--water)" />
+      <path d="M5 13c3-5 7-7 11-7s8 2 11 7c-3 5-7 7-11 7s-8-2-11-7Z" fill="none" stroke="#fff" strokeWidth="1.6" />
+      <circle cx="16" cy="13" r="3.6" fill="#fff" />
     </svg>
   );
 }

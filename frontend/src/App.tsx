@@ -32,6 +32,9 @@ export default function App() {
   const [starting, setStarting] = useState(false);
 
   const { state: run, attach } = useQueryRun();
+  // the left panel shows either the question form or the answer; a new or reopened run jumps to the answer
+  const [tab, setTab] = useState<"ask" | "result">(params.get("open") ? "result" : "ask");
+  useEffect(() => { if (run.id) setTab("result"); }, [run.id]);
 
   const refreshSessions = useCallback(async (pid: string) => {
     setSessions(await api<Session[]>(`/api/projects/${pid}/queries`));
@@ -179,8 +182,22 @@ export default function App() {
     );
   }
 
+  const running = run.status === "running";
   return (
-    <div className="app">
+    <div className="app explore">
+      <section className="explore-panel" aria-label="Question and results">
+        <div className="explore-head">
+          <p className="muted small">Ask about any district in India — answers tighten as the engine works.</p>
+          <div className="seg explore-tabs" role="tablist" aria-label="Panel">
+            <button role="tab" id="tab-ask" aria-controls="panel-ask" aria-selected={tab === "ask"}
+              className={tab === "ask" ? "active" : ""} onClick={() => setTab("ask")}>Ask a question</button>
+            <button role="tab" id="tab-result" aria-controls="panel-result" aria-selected={tab === "result"}
+              className={tab === "result" ? "active" : ""} onClick={() => setTab("result")}>
+              Results{running && <span className="pulse" aria-label="running" />}
+            </button>
+          </div>
+        </div>
+        <div className="explore-body" id="panel-ask" role="tabpanel" aria-labelledby="tab-ask" hidden={tab !== "ask"}>
       <QueryPanel
         regions={regions} regionId={regionId} onRegion={setRegionId}
         question={question} onQuestion={setQuestion}
@@ -191,6 +208,11 @@ export default function App() {
         onCheck={check} onRun={start} onStop={stop}
         sessions={sessions} onOpenSession={openSession} activeId={run.id}
       />
+        </div>
+        <div className="explore-body" id="panel-result" role="tabpanel" aria-labelledby="tab-result" hidden={tab !== "result"}>
+          <ResultPanel key={run.id ?? "idle"} run={run} />
+        </div>
+      </section>
       <main className="pane pane-map" aria-label="Map">
         <MapView region={regionWithGeom} universe={run.universe} sampled={run.sampled} confirmedIds={confirmed}
           task={task} target={target} unit={task ? unitFor(task, target) : ""} runKey={run.id ?? "none"} />
@@ -211,7 +233,6 @@ export default function App() {
           </p>
         )}
       </main>
-      <ResultPanel key={run.id ?? "idle"} run={run} />
     </div>
   );
 }

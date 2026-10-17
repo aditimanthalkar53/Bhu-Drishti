@@ -1,6 +1,8 @@
 import "leaflet/dist/leaflet.css";
 import { useEffect, useMemo, useState } from "react";
-import { GeoJSON, MapContainer, TileLayer, useMap } from "react-leaflet";
+import { GeoJSON, MapContainer, useMap } from "react-leaflet";
+import { cssVar, useTheme } from "../theme";
+import { BaseLayers } from "./BaseLayers";
 import { fmt } from "../format";
 import type { Region, Target, Task, TileEvent } from "../types";
 
@@ -66,41 +68,43 @@ export function MapView({ region, universe, sampled, confirmedIds, task, target,
     [region],
   );
   const counted = unit === "detections" || unit === "tiles with fires";
+  // canvas-rendered layers can't use CSS var(); resolve the theme's colours and re-key layers when it changes
+  const { mode } = useTheme();
+  const col = useMemo(() => ({
+    outline: cssVar("--cyan"), accent: cssVar("--water"), ochre: cssVar("--ochre"), ink: cssVar("--ink-2"), surface: cssVar("--sheet-solid"),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [mode]);
 
   return (
     <div className="map-wrap">
       <MapContainer center={[26.4, 91.2]} zoom={10} preferCanvas className="map" zoomControl attributionControl>
-        <TileLayer
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          maxZoom={18}
-        />
+        <BaseLayers />
         <FitRegion region={region} />
         {regionFc && (
-          <GeoJSON key={`region-${region?.id}`} data={regionFc}
-            style={{ color: "#18262E", weight: 2, fill: false, dashArray: "6 4" }} interactive={false} />
+          <GeoJSON key={`region-${region?.id}-${mode}`} data={regionFc}
+            style={{ color: col.outline, weight: 2, fill: false, dashArray: "6 4" }} interactive={false} />
         )}
         {universe && showProxy && (
           <GeoJSON
-            key={`universe-${runKey}`}
+            key={`universe-${runKey}-${mode}`}
             data={universe}
             interactive={false}
             style={(f) => {
               const r = Number((f?.properties as any)?.proxy_rank ?? 0);
-              return { stroke: false, fillColor: "#A87908", fillOpacity: 0.04 + 0.5 * r * r };
+              return { stroke: false, fillColor: col.ochre, fillOpacity: 0.04 + 0.5 * r * r };
             }}
           />
         )}
         {showSamples && sampledFc.features.length > 0 && (
           <GeoJSON
-            key={`samples-${runKey}-${sampledFc.features.length}-${confirmedIds.size}`}
+            key={`samples-${runKey}-${sampledFc.features.length}-${confirmedIds.size}-${mode}`}
             data={sampledFc}
             style={(f) => {
               const t = (f?.properties as any)?.sample as TileEvent;
               const pos = isPositive(task, unit, t.value);
-              if (!pos) return { color: "#18262E", weight: 1, opacity: 0.75, fill: true, fillColor: "#FAFBF8", fillOpacity: 0.55 };
+              if (!pos) return { color: col.ink, weight: 1, opacity: 0.75, fill: true, fillColor: col.surface, fillOpacity: 0.55 };
               const k = Math.min(1, t.value / maxVal);
-              return { color: "#0F3F7D", weight: 1, opacity: 0.9, fillColor: "#1D5FB4", fillOpacity: 0.45 + 0.5 * k };
+              return { color: col.outline, weight: 1, opacity: 0.9, fillColor: col.accent, fillOpacity: 0.45 + 0.5 * k };
             }}
             onEachFeature={(f, layer) => {
               const t = (f.properties as any).sample as TileEvent;
