@@ -303,3 +303,57 @@ def test_composite_routes_by_region():
     checks = comp.check_inputs(ir)
     assert any(not c.ok and c.blocking for c in checks), "the simulator refuses fire questions instead of inventing data"
     assert comp.is_live(ir.model_copy(update={"region_id": "in-x"}))
+
+
+def test_s2_reflectance_offset_and_char_test():
+    import xarray as xr
+    da = xr.DataArray(np.array([[[1500.0]], [[2500.0]], [[0.0]]]), dims=("time", "y", "x"),
+                      coords={"time": np.array(["2021-06-01", "2023-06-01", "2023-07-01"], dtype="datetime64[ns]")})
+    r = L.s2_reflectance(da)
+    assert r[0, 0, 0] == pytest.approx(0.15) and r[1, 0, 0] == pytest.approx(0.15) and np.isnan(r[2, 0, 0])
+    pre = np.array([[0.5, 0.5]]); post = np.array([[0.0, 0.0]]); crop = np.ones((1, 2), bool)
+    b08 = np.array([[0.08, 0.28]]); b12 = np.array([[0.07, 0.30]])     # ash vs harvested straw
+    burned, _ = L.burn_mask(pre, post, crop, b08, b12)
+    assert burned.tolist() == [[True, False]]
+
+
+class _FlakyOracle(Oracle):
+    name, model_version, sensor, unit, description = "flaky", "1", "s", "km²", "fails on odd tiles"
+
+    def run(self, u, idx, ir):
+        if idx % 2:
+            raise RuntimeError("Chunk and warp failed")
+        return OracleOutput(1.0, {})
+
+
+class _FlakyProvider(_CensusProvider):
+    def oracle(self, ir, sensor):
+        return _FlakyOracle()
+
+    def universe(self, ir):
+        ids, boxes = L.grid_tiles((0, 0, 0.2, 0.1), 0.01)
+        n = len(ids)
+        x = np.linspace(0, 1, n)
+        return TileUniverse("r", ids, boxes, np.ones(n), np.ones(n), x[:, None], ["x"], x, "test", {})
+
+
+def test_failing_tiles_do_not_kill_the_run_and_flag_insufficient_evidence(tmp_path):
+    eng = Engine(_FlakyProvider(), ResultCache(), tmp_path, EngineConfig(workers=2, evidence_wait_s=1))
+    ir = QueryIR(task=Task.TOTAL, target=Target.NEW_BUILTUP, region_id="r", start=date(2025, 1, 1), end=date(2025, 12, 31),
+                 baseline_start=date(2020, 1, 1), baseline_end=date(2020, 12, 31), precision=5, budget_tiles=80)
+    job = eng.submit(CompileResult(ir, "test"))
+    t0 = time.time()
+    while job.status in ("queued", "running"):
+        assert time.time() - t0 < 60
+        time.sleep(0.02)
+    assert job.error is None
+    assert job.result["missing_data_tiles"] > 0
+    assert job.result["stop_reason"] == "insufficient_evidence" and job.result["answer"].startswith("Insufficient evidence")
+
+
+def test_library_logs_are_redacted(caplog):
+    import logging
+    import aeqe.sources.planetary  # noqa: F401 — installs the record factory
+    with caplog.at_level(logging.WARNING):
+        logging.getLogger("odc.loader._builder").warning("Failed to load https://x.blob.core.windows.net/a.tif?st=1&sig=SECRETSIG%3D")
+    assert "SECRETSIG" not in caplog.text and "sig=<redacted>" in caplog.text

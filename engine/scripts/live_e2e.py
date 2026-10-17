@@ -82,6 +82,18 @@ def main() -> int:
         print("advisory:", r["advisory"].get("headline"), f"({len(r['advisory'].get('items', []))} items)")
     if r.get("priority_tiles"):
         print("top tiles:", json.dumps(r["priority_tiles"][:3]))
+    if case == "burned":
+        # plausibility: burn share per sampled tile should rise with independent FIRMS detections
+        import numpy as np
+        from scipy.stats import spearmanr
+
+        tiles = [t for e in job.events if e["type"] == "progress" for t in e["tiles"] if not t["detail"].get("no_data")]
+        share = np.array([t["detail"].get("burned_share_of_cropland", 0.0) for t in tiles])
+        det = np.array([t["detail"].get("firms_detections", 0) for t in tiles])
+        if len(tiles) > 10:
+            rho, p = spearmanr(share, det)
+            print(f"plausibility: Spearman(burn share, FIRMS detections) = {rho:.2f} (p={p:.3g}, n={len(tiles)}); "
+                  f"mean share with detections {share[det > 0].mean():.3f} vs without {share[det == 0].mean():.3f}")
     nd = r.get("missing_data_tiles")
     if nd:
         print("tiles without data:", nd)

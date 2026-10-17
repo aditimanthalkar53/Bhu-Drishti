@@ -19,7 +19,7 @@ export const LIVE_EXAMPLES: { label: string; question: string }[] = [
   { label: "Past flood event", question: "What percentage of cropland was flooded during 1-15 July 2024, within 5 pp?" },
   { label: "Fires (10 days)", question: "How many fire detections were there in the last 10 days?" },
   { label: "Fire hotspots", question: "Identify areas with recent fire detections and prioritize them for review" },
-  { label: "Burned cropland", question: "How much cropland was burned between 15 October 2025 and 15 November 2025, within 25%?" },
+  { label: "Burned cropland (experimental)", question: "How much cropland was burned between 15 October 2025 and 15 November 2025, within 25%?" },
   { label: "New construction", question: "How much new built-up area appeared between 2020 and 2025, within 25%?" },
 ];
 

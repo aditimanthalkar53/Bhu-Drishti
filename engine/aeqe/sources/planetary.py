@@ -27,6 +27,31 @@ from .base import Capability, Provenance, Source, SourceError, Status, redact
 STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
 
+def _install_log_redaction() -> None:
+    """odc/rasterio log failed asset URLs including their SAS signatures; strip them before any handler sees them."""
+    import logging
+
+    base = logging.getLogRecordFactory()
+    if getattr(base, "_bhudrishti_redacting", False):
+        return
+
+    def factory(*a, **kw):
+        rec = base(*a, **kw)
+        if rec.name.startswith(("odc", "rasterio", "pystac", "urllib3")):
+            try:
+                rec.msg = redact(rec.getMessage())
+                rec.args = None
+            except Exception:  # noqa: BLE001
+                pass
+        return rec
+
+    factory._bhudrishti_redacting = True  # type: ignore[attr-defined]
+    logging.setLogRecordFactory(factory)
+
+
+_install_log_redaction()
+
+
 class PlanetarySource(Source):
     id = "planetary_computer"
     name = "Microsoft Planetary Computer"
@@ -105,24 +130,25 @@ class PlanetarySource(Source):
         import odc.stac
         import planetary_computer
 
-        for attempt in range(3):
+        last: Optional[Exception] = None
+        for attempt in range(4):
+            # last attempt: skip assets that keep failing (they become nodata = unobserved), instead of losing the tile
+            strict = attempt < 3
             try:
                 with self._sem:
                     ds = odc.stac.load(items, bands=bands, bbox=[float(v) for v in bbox], crs="EPSG:4326",
-                                       resolution=resolution_deg, groupby=groupby, chunks=None, fail_on_error=True)
+                                       resolution=resolution_deg, groupby=groupby, chunks=None, fail_on_error=strict)
                 return ds
             except Exception as e:  # noqa: BLE001
+                last = e
                 msg = str(e)
                 if ("403" in msg or "AuthenticationFailed" in msg or "Signature" in msg) and attempt == 0:
                     items = [planetary_computer.sign(i) for i in items]   # fresh SAS token
                     continue
-                if any(s in msg for s in ("429", "503", "502", "500", "timed out", "Timeout", "Connection")) and attempt < 2:
-                    time.sleep(2.0 * (2 ** attempt))
-                    continue
-                err = SourceError(self.id, "unavailable", redact(f"COG read failed ({', '.join(bands)}): {type(e).__name__}: {msg[:300]}"))
-                self.record_error(err)
-                raise err from e
-        raise SourceError(self.id, "unavailable", "COG read failed after retries")
+                time.sleep(1.5 * (2 ** attempt))   # transient: throttling, truncated responses, 'Chunk and warp failed'
+        err = SourceError(self.id, "unavailable", redact(f"COG read failed ({', '.join(bands)}): {type(last).__name__}: {str(last)[:300]}"))
+        self.record_error(err)
+        raise err
 
     # -- products
     def worldcover_items(self, bbox) -> list:

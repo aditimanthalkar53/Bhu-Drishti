@@ -6,7 +6,7 @@ import { AuthModal } from "../components/AuthModal";
 
 const USE_CASES = [
   { icon: "🌊", title: "Flooded cropland", body: "Share and area of cropland under water in any of India's 735 districts, from Sentinel-1 radar that sees through monsoon cloud." },
-  { icon: "🔥", title: "Fires and stubble burning", body: "Every NASA FIRMS detection counted per village-sized tile, and burn-scar area on cropland measured from Sentinel-2." },
+  { icon: "🔥", title: "Fires and stubble burning", body: "Every NASA FIRMS detection counted per village-sized tile and ranked for field review. Burn-scar area from Sentinel-2 is experimental." },
   { icon: "🏗️", title: "New construction", body: "New built-up area between two years from cloud-masked Sentinel-2 dry-season composites." },
   { icon: "🌾", title: "Recovery guidance", body: "Each result comes with next steps for officials — PMFBY loss reporting, contingency crops, residue-management support." },
 ];

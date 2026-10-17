@@ -88,6 +88,7 @@ export function stopReasonLabel(r: string): string {
       tile_budget: "Tile budget used up",
       user_stop: "Stopped by you",
       census: "Every tile counted",
+      insufficient_evidence: "Insufficient evidence",
       replay_complete: "Replay complete",
       exhausted: "Finished",
     } as Record<string, string>
