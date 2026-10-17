@@ -306,7 +306,7 @@ def test_composite_routes_by_region():
 
 
 def test_s2_reflectance_offset_and_char_test():
-    import xarray as xr
+    xr = pytest.importorskip("xarray")     # live-data extra (requirements-real.txt)
     da = xr.DataArray(np.array([[[1500.0]], [[2500.0]], [[0.0]]]), dims=("time", "y", "x"),
                       coords={"time": np.array(["2021-06-01", "2023-06-01", "2023-07-01"], dtype="datetime64[ns]")})
     r = L.s2_reflectance(da)
