@@ -45,7 +45,9 @@ export interface ApiKey {
 
 /** Owner-scoped JSON records for the product features (areas, monitors, reports, recipients…). */
 export type RecordKind =
-  | "aoi" | "monitor" | "alert" | "report" | "recipient" | "group" | "delivery" | "webhook" | "notification" | "audit";
+  | "aoi" | "monitor" | "alert" | "report" | "recipient" | "group" | "delivery" | "webhook" | "notification" | "audit"
+  | "reset"       // password-reset tokens (hash only, 30-minute expiry)
+  | "tokens";     // per-user "tokens issued before this instant are revoked"
 
 export interface StoredRecord {
   id: string;
@@ -60,6 +62,7 @@ export interface Store {
   createUser(u: User): Promise<User>;
   userByEmail(email: string): Promise<User | undefined>;
   userById(id: string): Promise<User | undefined>;
+  setPasswordHash(id: string, hash: string): Promise<void>;
 
   createProject(p: Project): Promise<Project>;
   projectsFor(userId: string): Promise<Project[]>;

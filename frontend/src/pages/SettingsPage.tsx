@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { del, post } from "../api";
+import { del, post, setToken } from "../api";
 import { useAuth } from "../auth";
 import { ago, fmtDate } from "../format";
 import type { Webhook } from "../types";
 import { ErrorNote, Page, Pill, useAction, useData } from "./common";
 
 interface ApiKey { id: string; label: string; prefix: string; createdAt: string }
-interface Integrations { report_delivery: string; smtp_configured: boolean; public_url: string; webhook_events: string[]; allow_private_webhooks: boolean }
+interface Integrations { report_delivery: string; smtp_configured: boolean; public_url: string; webhook_events: string[]; allow_private_webhooks: boolean; auto_email?: string[] }
 
 export function SettingsPage() {
   const { user } = useAuth();
@@ -19,7 +19,7 @@ export function SettingsPage() {
   const [url, setUrl] = useState("http://n8n:5678/webhook/bhu-drishti");
   const [events, setEvents] = useState<string[]>(["report.approved", "alert.triggered"]);
   const [newSecret, setNewSecret] = useState<string | null>(null);
-  const [testTo, setTestTo] = useState(user && !user.guest ? user.email : "");
+  const [testTo, setTestTo] = useState(user?.email ?? "");
 
   return (
     <Page title="Settings" lead="Profile, API keys for scripts and n8n, outgoing webhooks and email delivery.">
@@ -27,13 +27,16 @@ export function SettingsPage() {
       {act.message && <p className="notice notice-ok">{act.message}</p>}
       <section className="card">
         <h2>Profile</h2>
-        <p>{user?.guest ? "You are using a guest session. Sign in (top right) to keep your areas, monitors and reports." : `${user?.name} · ${user?.email}`}</p>
+        <p>{user?.name} · {user?.email}</p>
+        <ChangePassword />
       </section>
 
       <section className="card">
         <h2>Email delivery</h2>
         <p className="small">Mode: <strong>{integ.data?.report_delivery === "n8n" ? "n8n (reports are handed to your n8n workflow via the report.approved webhook)" : "direct SMTP"}</strong>
           {" · "}SMTP {integ.data?.smtp_configured ? <Pill tone="ok">configured</Pill> : <Pill tone="warn">not configured</Pill>}</p>
+        <p className="small">Automatic copy of every generated report (summary + technical PDF):{" "}
+          {integ.data?.auto_email?.length ? <strong>{integ.data.auto_email.join(", ")}</strong> : <span className="muted">off — set REPORT_AUTO_EMAIL in .env</span>}</p>
         <div className="row-actions">
           <input className="input" type="email" placeholder="you@example.org" value={testTo} onChange={(e) => setTestTo(e.target.value)} aria-label="Test email address" />
           <button className="btn btn-small" disabled={act.busy === "mail"} onClick={() => void act.run("mail", async () => {
@@ -121,5 +124,43 @@ export function SettingsPage() {
         </details>
       </section>
     </Page>
+  );
+}
+
+
+function ChangePassword() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const act = useAction();
+  return (
+    <details>
+      <summary className="small">Change password</summary>
+      <div className="form-grid" style={{ marginTop: 8 }}>
+        <label className="field"><span>Current password</span><input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} /></label>
+        <span />
+        <label className="field"><span>New password (8+ characters)</span><input type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} /></label>
+        <label className="field"><span>Confirm new password</span><input type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label>
+      </div>
+      <div className="row-actions">
+        <button className="btn btn-small" disabled={!current || !next || act.busy === "pw"} onClick={() => void act.run("pw", async () => {
+          if (next.length < 8) throw new Error("Use at least 8 characters.");
+          if (next !== confirm) throw new Error("The new passwords do not match.");
+          const r = await post<{ token: string }>("/api/auth/password", { current, next });
+          setToken(r.token);   // the old token is revoked server-side; keep this browser signed in
+          setCurrent(""); setNext(""); setConfirm("");
+          return "Password changed. Other devices have been signed out.";
+        })}>Change password</button>
+        <button className="btn btn-small" disabled={act.busy === "out"} onClick={() => void act.run("out", async () => {
+          if (!window.confirm("Sign out of Bhu-Drishti on every device, including this one?")) return "";
+          await post("/api/auth/logout-everywhere", {});
+          setToken(null);
+          window.location.assign("/");
+          return "";
+        })}>Sign out on all devices</button>
+      </div>
+      <ErrorNote error={act.error} />
+      {act.message && <p className="notice notice-ok">{act.message}</p>}
+    </details>
   );
 }

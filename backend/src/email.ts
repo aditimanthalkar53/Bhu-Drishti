@@ -42,14 +42,17 @@ export async function sendMail(m: MailOptions): Promise<{ messageId: string }> {
   return { messageId: info.messageId };
 }
 
-export async function sendReportEmail(recipient: string, reportTitle: string, summary: string, pdf: Buffer, name?: string): Promise<{ messageId: string }> {
+
+export type Attachment = { filename: string; content: Buffer; contentType: string };
+
+export async function sendReportEmail(recipient: string, reportTitle: string, summary: string, files: Attachment[], name?: string): Promise<{ messageId: string }> {
   const greet = name ? `Dear ${name},` : "Hello,";
   return sendMail({
     to: recipient,
     subject: `Bhu-Drishti report — ${reportTitle}`,
-    text: `${greet}\n\n${summary}\n\nThe full report, with data sources, uncertainty and limitations, is attached as a PDF.\n\n— Bhu-Drishti satellite monitoring`,
-    html: `<p>${esc(greet)}</p><p>${esc(summary)}</p><p>The full report, with data sources, uncertainty and limitations, is attached as a PDF.</p>` +
-      `<p style="color:#666;font-size:12px">Sent by Bhu-Drishti satellite monitoring. Figures are satellite-based estimates; please read the limitations section before acting.</p>`,
-    attachments: [{ filename: `bhu-drishti-${reportTitle.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 60)}.pdf`, content: pdf, contentType: "application/pdf" }],
+    text: `${greet}\n\n${summary}\n\nTwo PDFs are attached: a plain-language summary, and the full technical report with data sources, uncertainty and limitations.\n\n— Bhu-Drishti satellite monitoring`,
+    html: `<p>${esc(greet)}</p><p>${esc(summary)}</p><p>Two PDFs are attached: a <b>plain-language summary</b>, and the full <b>technical report</b> with data sources, uncertainty and limitations.</p>` +
+      `<p style="color:#666;font-size:12px">Sent by Bhu-Drishti satellite monitoring. Figures are satellite-based estimates; please read the limitations before acting.</p>`,
+    attachments: files,
   });
 }

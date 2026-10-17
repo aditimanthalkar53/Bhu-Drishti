@@ -1,9 +1,10 @@
 /**
- * Authentication state and helpers shared across the whole app.
+ * Authentication state shared across the app.
  *
  * - Reads / writes the JWT in localStorage.
- * - Exposes the current user, login / register / logout helpers, and a
- *   "guest session" creator used as the fallback for anonymous access.
+ * - Exposes the current user and login / register / logout helpers.
+ * - The public website is open to everyone; every /app page needs a signed-in account
+ *   (accounts are stored server-side in SQLite). There are no guest sessions.
  */
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, post, setToken } from "./api";
@@ -21,7 +22,6 @@ interface AuthCtx {
   error: string | null;
   login(email: string, password: string): Promise<void>;
   register(email: string, password: string, name: string): Promise<void>;
-  loginAsGuest(): Promise<void>;
   logout(): void;
   clearError(): void;
 }
@@ -33,11 +33,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // On mount, validate whatever token is in localStorage.
+  // On mount, validate whatever token is in localStorage (old guest tokens are dropped).
   useEffect(() => {
     (async () => {
       try {
         const me = await api<AuthUser>("/api/auth/me");
+        if (me.guest) throw new Error("guest sessions are no longer supported");
         setUser(me);
       } catch {
         setToken(null);
@@ -47,7 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
-  const _handleAuth = useCallback(async (r: { token: string; user: AuthUser }) => {
+  const handle = useCallback((r: { token: string; user: AuthUser }) => {
     setToken(r.token);
     setUser(r.user);
   }, []);
@@ -55,35 +56,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     setError(null);
     try {
-      const r = await post<{ token: string; user: AuthUser }>("/api/auth/login", { email, password });
-      await _handleAuth(r);
+      handle(await post<{ token: string; user: AuthUser }>("/api/auth/login", { email: email.trim(), password }));
     } catch (e) {
       setError((e as Error).message);
       throw e;
     }
-  }, [_handleAuth]);
+  }, [handle]);
 
   const register = useCallback(async (email: string, password: string, name: string) => {
     setError(null);
     try {
-      const r = await post<{ token: string; user: AuthUser }>("/api/auth/register", { email, password, name });
-      await _handleAuth(r);
+      handle(await post<{ token: string; user: AuthUser }>("/api/auth/register", { email: email.trim(), password, name: name.trim() }));
     } catch (e) {
       setError((e as Error).message);
       throw e;
     }
-  }, [_handleAuth]);
-
-  const loginAsGuest = useCallback(async () => {
-    setError(null);
-    try {
-      const r = await post<{ token: string; user: AuthUser }>("/api/auth/guest");
-      await _handleAuth(r);
-    } catch (e) {
-      setError((e as Error).message);
-      throw e;
-    }
-  }, [_handleAuth]);
+  }, [handle]);
 
   const logout = useCallback(() => {
     setToken(null);
@@ -93,7 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setError(null), []);
 
   return (
-    <Ctx.Provider value={{ user, loading, error, login, register, loginAsGuest, logout, clearError }}>
+    <Ctx.Provider value={{ user, loading, error, login, register, logout, clearError }}>
       {children}
     </Ctx.Provider>
   );

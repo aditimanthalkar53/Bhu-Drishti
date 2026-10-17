@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { AuditEntry, Delivery, Group, Notification, Recipient, Report } from "./domain.js";
-import { sendReportEmail, smtpConfigured } from "./email.js";
+import { sendMail, sendReportEmail, smtpConfigured } from "./email.js";
 import type { EngineClient } from "./engine-client.js";
-import { createReportPdf, type ReportQuery } from "./report.js";
+import { createReportPdf, type ReportData, type ReportQuery } from "./report.js";
+import { createSimpleReportPdf } from "./report-simple.js";
 import type { QuerySession, Store } from "./store/types.js";
 import { emit } from "./webhooks.js";
 
@@ -13,7 +14,7 @@ export function snapshot(result: Record<string, any> | null | undefined): Record
   if (!result) return null;
   const keep = ["estimate", "units", "stop_reason", "n", "population", "oracle_calls", "cache_hits", "elapsed_s", "sensor",
     "oracle", "scene_key", "caveats", "supporting_evidence", "advisory", "data_mode", "region", "inputs_summary",
-    "missing_data_tiles", "sampled_fraction", "answer"];
+    "missing_data_tiles", "sampled_fraction", "answer", "query"];
   const out: Record<string, unknown> = {};
   for (const k of keep) if (k in result) out[k] = result[k];
   if (Array.isArray(result.priority_tiles)) out.priority_tiles = result.priority_tiles.slice(0, 25);
@@ -52,8 +53,75 @@ export async function groupNames(store: Store, ownerId: string): Promise<Map<str
   return new Map((await store.listRecords<Group>("group", ownerId)).map((g) => [g.id, g.name]));
 }
 
-/** Build the PDF from stored sessions (+ live map evidence if the engine still has the job). */
-export async function buildReportPdf(store: Store, engine: EngineClient, report: Report): Promise<Buffer> {
+export type PdfStyle = "technical" | "simple";
+
+/** Build a PDF from stored sessions (+ live map evidence if the engine still has the job).
+ *  ``simple`` = plain-language summary for everyone; ``technical`` = full statistics, sources and limitations. */
+export async function buildReportPdf(store: Store, engine: EngineClient, report: Report, style: PdfStyle = "technical"): Promise<Buffer> {
+  const data = await reportData(store, engine, report);
+  return style === "simple" ? createSimpleReportPdf(data) : createReportPdf(data);
+}
+
+/** Both PDFs, named for email attachments. */
+export async function reportAttachments(store: Store, engine: EngineClient, report: Report) {
+  const data = await reportData(store, engine, report);
+  const slug = report.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 50) || "report";
+  return [
+    { filename: `bhu-drishti-summary-${slug}.pdf`, content: await createSimpleReportPdf(data), contentType: "application/pdf" },
+    { filename: `bhu-drishti-technical-${slug}.pdf`, content: await createReportPdf(data), contentType: "application/pdf" },
+  ];
+}
+
+// ---------------------------------------------------------------- automatic delivery
+let autoEmail: string[] = [];
+export function setAutoEmail(list: string[]) {
+  autoEmail = list;
+}
+export function autoEmailTargets() {
+  return [...autoEmail];
+}
+
+/**
+ * Email every newly generated report to the configured REPORT_AUTO_EMAIL address(es) — both PDFs attached.
+ * Independent of the approval gate for officials: this is the team's own copy. Never throws.
+ */
+export async function autoDeliver(store: Store, engine: EngineClient, report: Report, log?: { warn: (o: object, m: string) => void }) {
+  if (!autoEmail.length) return { sent: 0, skipped: "REPORT_AUTO_EMAIL not set" };
+  if (!smtpConfigured()) {
+    await notify(store, report.ownerId, "Report not emailed", "SMTP is not configured (SMTP_USER / SMTP_PASS).", "warning", `/app/reports/${report.id}`);
+    return { sent: 0, skipped: "SMTP not configured" };
+  }
+  let sent = 0;
+  try {
+    const files = await reportAttachments(store, engine, report);
+    const status = report.status === "pending_approval" ? " (awaiting approval)" : "";
+    for (const to of autoEmail) {
+      try {
+        const info = await sendMail({
+          to, subject: `Bhu-Drishti report${status} — ${report.title}`,
+          text: `${report.summary}\n\nTwo PDFs are attached: a plain-language summary and the full technical report.\n\n— Bhu-Drishti`,
+          html: `<p>${escapeHtml(report.summary)}</p><p>Two PDFs are attached: a <b>plain-language summary</b> and the full <b>technical report</b>.</p>` +
+            `<p style="color:#666;font-size:12px">Sent automatically by Bhu-Drishti${escapeHtml(status)}. Figures are satellite-based estimates; read the limitations before acting.</p>`,
+          attachments: files,
+        });
+        await logDelivery(store, report, null, "sent", "smtp", null, info.messageId, to);
+        sent++;
+      } catch (e) {
+        await logDelivery(store, report, null, "failed", "smtp", (e as Error).message, null, to);
+        log?.warn({ err: e, report: report.id }, "automatic report email failed");
+      }
+    }
+    await audit(store, report.ownerId, "system", "report.auto_email", `report:${report.id}`, { sent, to: autoEmail.length });
+    if (sent) await notify(store, report.ownerId, "Report emailed", `${report.title} → ${autoEmail.join(", ")}`, "info", `/app/reports/${report.id}`);
+  } catch (e) {
+    log?.warn({ err: e, report: report.id }, "building report PDFs for automatic email failed");
+  }
+  return { sent };
+}
+
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+async function reportData(store: Store, engine: EngineClient, report: Report): Promise<ReportData> {
   const queries: ReportQuery[] = [];
   for (const id of report.queryIds) {
     const s = await store.session(id);
@@ -67,7 +135,7 @@ export async function buildReportPdf(store: Store, engine: EngineClient, report:
     queries.push(q);
   }
   const approver = report.approvedBy ? (await store.userById(report.approvedBy))?.name ?? report.approvedBy : null;
-  return createReportPdf({ reportId: report.id, title: report.title, summary: report.summary, status: report.status, approvedBy: approver, queries });
+  return { reportId: report.id, title: report.title, summary: report.summary, status: report.status, approvedBy: approver, queries };
 }
 
 export function reportSummary(sessions: QuerySession[]): string {
@@ -112,7 +180,7 @@ export async function sendReport(store: Store, engine: EngineClient, report: Rep
     await audit(store, report.ownerId, actor, "report.send", `report:${report.id}`, { via: "smtp", error: report.note });
     throw Object.assign(new Error(report.note), { statusCode: 503 });
   }
-  const pdf = await buildReportPdf(store, engine, report);
+  const pdf = await reportAttachments(store, engine, report);
   let ok = 0;
   const failures: string[] = [];
   for (const r of recipients) {

@@ -9,29 +9,37 @@ import { MonitorScheduler } from "./monitors.js";
 import { appRoutes } from "./routes.js";
 import { MemoryStore } from "./store/memory.js";
 import { PostgresStore } from "./store/postgres.js";
+import { SqliteStore } from "./store/sqlite.js";
+import { setAutoEmail } from "./delivery.js";
 import type { Store } from "./store/types.js";
 
 export async function buildApp(config: Config, opts: { store?: Store; logger?: boolean } = {}) {
   const app = Fastify({
+    trustProxy: config.trustProxy as boolean,   // a hop count is supported at runtime; the type overloads omit it
+    bodyLimit: 5 * 1024 * 1024,   // GeoJSON / KML area uploads
     logger: opts.logger === false ? false : { redact: ["req.headers.authorization", "req.headers[\"x-api-key\"]", "req.query.token"] },
   });
-  const store = opts.store ?? (config.databaseUrl ? new PostgresStore(config.databaseUrl) : new MemoryStore());
+  const store = opts.store ?? (config.databaseUrl ? new PostgresStore(config.databaseUrl)
+    : config.sqlitePath === "memory" ? new MemoryStore() : new SqliteStore(config.sqlitePath));
   await store.init();
+  if (store instanceof SqliteStore) app.addHook("onClose", async () => store.close());
 
   await app.register(cors, { origin: config.corsOrigin, credentials: true, methods: ["GET", "POST", "PATCH", "DELETE"] });
   await app.register(jwt, { secret: config.jwtSecret });
-  registerAuth(app, store);
-  authRoutes(app, store, { allowGuest: config.allowGuest });
+  registerAuth(app, store, { allowGuest: config.allowGuest });
+  authRoutes(app, store, { allowGuest: config.allowGuest, appUrl: config.appUrl });
   const engine = new EngineClient(config.engineUrl);
-  appRoutes(app, store, engine);
+  appRoutes(app, store, engine, { maxConcurrentRuns: config.maxConcurrentRuns });
   const scheduler = new MonitorScheduler(store, engine, app.log, { publicUrl: config.publicUrl });
   featureRoutes(app, store, engine, scheduler, { publicUrl: config.publicUrl, allowPrivateWebhooks: config.allowPrivateWebhooks });
+  setAutoEmail(config.reportAutoEmail);
   if (config.scheduler) {
     scheduler.start();
     app.addHook("onClose", async () => scheduler.stop());
   }
   app.decorate("scheduler", scheduler);
 
-  app.log.info(`store=${store.constructor.name} engine=${config.engineUrl} scheduler=${config.scheduler}`);
+  app.log.info(`store=${store.constructor.name} engine=${config.engineUrl} scheduler=${config.scheduler} ` +
+    `guest=${config.allowGuest} autoEmail=${config.reportAutoEmail.length} address(es)`);
   return app;
 }

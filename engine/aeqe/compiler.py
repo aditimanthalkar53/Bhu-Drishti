@@ -25,17 +25,20 @@ from typing import Optional
 import httpx
 from pydantic import ValidationError
 
-from .ir import Point, QueryIR, Target, Task
+from .ir import TASK_TARGETS, Point, QueryIR, Target, Task
 
 MONTHS = {m: i + 1 for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"])}
 MONTHS.update({k[:3]: v for k, v in list(MONTHS.items())})
 MONTHS["sept"] = 9
 
-FLOOD_WORDS = r"flood|inundat|submerg|waterlog|water-log|under water"
-BUILT_WORDS = r"construct|built[- ]?up|urban|building|settlement|expansion|sprawl|development"
+FLOOD_WORDS = (r"flood|inundat|submerg|waterlog|water-log|water log|under water|underwater|water ?logged|standing water"
+               r"|deluge|overflow|baadh|badh\b|baarh|crops? (?:under|in) water|fields? (?:under|in) water|drown")
+BUILT_WORDS = (r"construct|built[- ]?up|urban|building|settlement|expansion|sprawl|development|new houses?|housing|encroach"
+               r"|real estate|infrastructure|concrete|colon(?:y|ies)|township|city (?:growth|grow)")
 KILN_WORDS = r"kiln|brick"
-FIRE_WORDS = r"\bfires?\b|burn|stubble|parali|residue|hotspot|hot spot|thermal anomal|blaze|wildfire"
+FIRE_WORDS = r"\bfires?\b|burn|stubble|parali|pa?rali|residue|hotspot|hot spot|thermal anomal|blaze|wildfire|\baag\b|crop fire|farm fire"
+IN_SCOPE_WORDS = (FLOOD_WORDS, BUILT_WORDS, KILN_WORDS, FIRE_WORDS)
 BURNED_AREA_WORDS = (r"burn(?:ed|t)\s+(?:crop)?(?:land|area|fields?)|(?:cropland|fields?|farmland|area)\s+(?:was|were|got|is|are|has been|have been)\s+burn"
                      r"|area\s+(?:was\s+)?burn|scar|how much .*burn|hectares? .*burn|km.? .*burn|(?:share|percent\w*|%|fraction|proportion)\b.*burn")
 
@@ -46,18 +49,43 @@ class CompileResult:
     parser: str
     assumptions: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    suggested_region: Optional[dict] = None
 
     def to_json(self) -> dict:
-        return {
+        d = {
             "ir": json.loads(self.ir.model_dump_json()),
             "parser": self.parser,
             "assumptions": self.assumptions,
             "warnings": self.warnings,
         }
+        if self.suggested_region:
+            d["suggested_region"] = self.suggested_region
+        return d
 
 
 class CompileError(ValueError):
     pass
+
+
+class OutOfScopeError(CompileError):
+    """The question is not something Bhu-Drishti measures; ``reply`` explains and suggests alternatives."""
+
+    def __init__(self, reply):
+        super().__init__(reply.message)
+        self.reply = reply
+
+
+DEFAULT_TASK = {
+    Target.FLOODED_CROPLAND: Task.AREA_FRACTION, Target.NEW_BUILTUP: Task.TOTAL, Target.BRICK_KILN: Task.COUNT,
+    Target.ACTIVE_FIRE: Task.COUNT, Target.BURNED_CROPLAND: Task.TOTAL,
+}
+
+
+def _unknown_reply():
+    from .scope import EXAMPLES_LIVE, SUPPORTED, ScopeReply
+
+    return ScopeReply("related", "I couldn't tell what to measure. Bhu-Drishti answers questions about " + ", ".join(SUPPORTED) + ".",
+                      suggestions=EXAMPLES_LIVE)
 
 
 def _month_end(y: int, m: int) -> date:
@@ -185,9 +213,9 @@ class RuleCompiler:
         elif "target" in overrides:
             target = Target(overrides["target"])
         else:
-            raise CompileError(
-                "Couldn't tell what to measure. Supported targets: flooded cropland, new built-up area / construction, brick kilns."
-            )
+            from .scope import classify
+
+            raise OutOfScopeError(classify(q) or _unknown_reply())
 
         # ---- point (inspect)
         point = None
@@ -223,6 +251,15 @@ class RuleCompiler:
             task = Task.TOTAL
         if "task" in overrides and overrides["task"]:
             task = Task(overrides.pop("task"))
+        # a phrasing we cannot answer as asked → the closest answer we can give, said out loud
+        if task == Task.INSPECT and live:
+            task = DEFAULT_TASK[target]
+            assumptions.append("checking a single point is not available with live data → answering for the whole area instead")
+        if target not in TASK_TARGETS[task]:
+            fallback = DEFAULT_TASK[target]
+            assumptions.append(f"'{task.value.replace('_', ' ')}' is not available for {target.value.replace('_', ' ')} → "
+                               f"answering as '{fallback.value.replace('_', ' ')}' instead")
+            task = fallback
 
         # ---- dates
         start, end, b0, b1, notes = parse_dates(t, today)
@@ -406,6 +443,11 @@ class LLMCompiler:
 def compile_question(question: str, *, region_id: str, overrides: Optional[dict] = None, live: bool = False,
                      today: Optional[date] = None) -> CompileResult:
     llm = LLMCompiler()
+    t = question.lower()
+    if not any(re.search(w, t) for w in IN_SCOPE_WORDS) and not (overrides or {}).get("target"):
+        from .scope import classify
+
+        raise OutOfScopeError(classify(question) or _unknown_reply())
     if llm.enabled:
         try:
             return llm.compile(question, region_id=region_id, overrides=overrides, live=live, today=today)

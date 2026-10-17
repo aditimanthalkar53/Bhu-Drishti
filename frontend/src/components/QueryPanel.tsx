@@ -23,7 +23,38 @@ export const LIVE_EXAMPLES: { label: string; question: string }[] = [
   { label: "New construction", question: "How much new built-up area appeared between 2020 and 2025, within 25%?" },
 ];
 
+/** A wider set of ready questions for live districts — type your own any way you like, these are just starting points. */
+export const MORE_QUESTIONS: { group: string; items: string[] }[] = [
+  { group: "Floods", items: [
+    "Is any farmland under water right now?",
+    "How many hectares of cropland were flooded in the last 30 days?",
+    "What share of cropland was waterlogged during August 2024?",
+    "Map the fields that were flooded between 1 and 20 July 2024",
+  ] },
+  { group: "Fires and stubble burning", items: [
+    "How many fires were detected this week?",
+    "Where were the stubble-burning hotspots in the last 5 days?",
+    "How many crop fires were there between 15 October 2025 and 15 November 2025?",
+    "Which villages had farm fires since 1 Oct?",
+  ] },
+  { group: "Construction", items: [
+    "How much land was built on between 2020 and 2025?",
+    "How many square kilometres of new buildings came up since 2021?",
+  ] },
+];
+
+/** The engine's reply when a question is outside what Bhu-Drishti measures. */
+export interface ScopeReply {
+  kind: "out_of_scope";
+  category: "help" | "related" | "off_topic";
+  topic: string | null;
+  message: string;
+  suggestions: string[];
+  supported: string[];
+}
+
 interface Props {
+  scope?: ScopeReply | null;
   regions: Region[];
   regionId: string;
   onRegion: (id: string) => void;
@@ -48,6 +79,7 @@ interface Props {
 
 export function QueryPanel(p: Props) {
   const [showHistory, setShowHistory] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const ir = p.preview?.compile.ir;
   const blocking = p.preview?.plan.checks.filter((c) => c.blocking && !c.ok) ?? [];
   const region = p.regions.find((r) => r.id === p.regionId);
@@ -70,7 +102,7 @@ export function QueryPanel(p: Props) {
             rows={4}
             value={p.question}
             onChange={(e) => p.onQuestion(e.target.value)}
-            placeholder="e.g. What percentage of cropland was flooded during 1-15 July 2023?"
+            placeholder="Ask in your own words, e.g. “Is farmland flooded this week?” or “Where were crop fires in the last 5 days?”"
             disabled={p.running}
           />
         </label>
@@ -82,7 +114,26 @@ export function QueryPanel(p: Props) {
               {ex.label}
             </button>
           ))}
+          {region && !region.simulated && (
+            <button type="button" className="chip chip-ghost" onClick={() => setShowMore((v) => !v)} aria-expanded={showMore}>
+              {showMore ? "Fewer ideas" : "More questions…"}
+            </button>
+          )}
         </div>
+        {showMore && region && !region.simulated && (
+          <div className="more-questions">
+            {MORE_QUESTIONS.map((g) => (
+              <div key={g.group}>
+                <span className="side-label">{g.group}</span>
+                <ul>
+                  {g.items.map((q) => (
+                    <li key={q}><button type="button" className="link-btn" disabled={p.running} onClick={() => p.onQuestion(q)}>{q}</button></li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="field-row">
           <label className="field">
@@ -113,6 +164,23 @@ export function QueryPanel(p: Props) {
           )}
         </div>
       </form>
+
+      {p.scope && (
+        <section className={`scope-card scope-${p.scope.category}`} role="status" aria-live="polite">
+          <strong>{p.scope.category === "help" ? "What you can ask" : p.scope.category === "off_topic" ? "This question isn't for Bhu-Drishti" : "Not available yet"}</strong>
+          <p className="small">{p.scope.message}</p>
+          {p.scope.suggestions.length > 0 && (
+            <>
+              <span className="muted small">Try instead:</span>
+              <div className="examples">
+                {p.scope.suggestions.map((s) => (
+                  <button key={s} type="button" className="chip" onClick={() => p.onQuestion(s)}>{s}</button>
+                ))}
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       {p.previewError && <p className="notice notice-error" role="alert">{p.previewError}</p>}
 
@@ -147,6 +215,11 @@ export function QueryPanel(p: Props) {
           </ul>
           {p.preview.compile.warnings?.length > 0 && (
             <ul className="assumptions">{p.preview.compile.warnings.map((w) => <li key={w} className="warn-text">{w}</li>)}</ul>
+          )}
+          {p.preview.compile.suggested_region && (
+            <button type="button" className="btn btn-small" onClick={() => p.onRegion(p.preview!.compile.suggested_region!.id)}>
+              Switch the area to {p.preview.compile.suggested_region.name}
+            </button>
           )}
           {p.preview.plan.steps.length > 0 && (
             <>

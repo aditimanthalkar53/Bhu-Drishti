@@ -45,7 +45,8 @@ export function HistoryPage() {
                     <td className="small">{fmtDate(s.createdAt)}{s.source === "monitor" && <div className="muted">monitor</div>}</td>
                     <td className="row-actions">
                       <Link className="btn btn-small" to={`/app?open=${s.id}`}>Open</Link>
-                      {done(s) && <a className="btn btn-small" href={authUrl(`/api/queries/${s.id}/report.pdf`)}>PDF</a>}
+                      {done(s) && <a className="btn btn-small" href={authUrl(`/api/queries/${s.id}/report.pdf?style=simple`)}>Summary PDF</a>}
+                      {done(s) && <a className="btn btn-small" href={authUrl(`/api/queries/${s.id}/report.pdf`)}>Technical PDF</a>}
                     </td>
                   </tr>
                 ))}

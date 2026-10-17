@@ -55,7 +55,7 @@ from ..sources.earthengine import earth_engine, embedding_pcs
 from ..sources.firms import firms
 from ..sources.openmeteo import open_meteo
 from ..sources.planetary import planetary
-from .base import Check, Oracle, OracleOutput, Provider, Region, TileUniverse
+from .base import Check, Oracle, OracleOutput, Provider, Region, TileUniverse, report_status
 from .planetary import (WORLDCOVER_BUILT, WORLDCOVER_CROPLAND, WORLDCOVER_WATER, fraction_per_tile, grid_tiles,
                         otsu_threshold, tile_area_km2)
 
@@ -535,6 +535,7 @@ class LiveProvider(Provider):
             keep = frac > 0.01
             ids, boxes, frac = [t for t, k in zip(ids, keep) if k], boxes[keep], frac[keep]
             res = max(0.001, td / 10)
+            report_status(f"First run in {r.name}: reading ESA WorldCover land cover and tiling the district (cached afterwards)…")
             wc = self.pc.worldcover(r.bbox, res, items=self.static_items("worldcover", rid))
             xs, ys = grid_coords(r.bbox, wc.shape)
             X, Y = np.meshgrid(xs, ys)
@@ -659,6 +660,7 @@ class LiveProvider(Provider):
         if ir.target == Target.FLOODED_CROPLAND:
             res_o = max(0.002, td / 5)
             ev = self._window_items("s1_event", ir)
+            report_status(f"Reading a coarse radar overview of {r.name} from {len(ev)} Sentinel-1 pass(es)…")
             e = self.pc.load(ev, ["vv"], r.bbox, res_o)["vv"]
             event_db = to_db(e.min("time").values if "time" in e.dims else e.values)
             xs, ys = grid_coords(r.bbox, event_db.shape)
@@ -667,6 +669,7 @@ class LiveProvider(Provider):
             thr, thr_method = regional_threshold(event_db[inside & np.isfinite(event_db)])
             ref = self._window_items("s1_ref", ir)
             if ref:
+                report_status(f"Reading the dry-season reference ({len(ref)} radar passes) to tell floods from normal water…")
                 rr = self.pc.load(ref, ["vv"], r.bbox, res_o)["vv"]
                 ref_db = _fit(to_db(rr.median("time").values if "time" in rr.dims else rr.values), event_db.shape)
             else:
@@ -695,6 +698,7 @@ class LiveProvider(Provider):
             keep = base > 0.01
             desc = "WorldCover built-up fraction and urban-edge score (growth happens at the edge of existing settlements)"
         elif ir.target in (Target.BURNED_CROPLAND, Target.ACTIVE_FIRE):
+            report_status(f"Fetching NASA FIRMS fire detections for {r.name}…")
             dets, prov = self.firms.detections(r.bbox, ir.start, ir.end)
             lon = np.array([d["lon"] for d in dets]) if dets else np.zeros(0)
             lat = np.array([d["lat"] for d in dets]) if dets else np.zeros(0)
@@ -721,6 +725,7 @@ class LiveProvider(Provider):
         else:
             raise ValueError(f"unsupported target {ir.target}")
 
+        report_status("Adding AlphaEarth embedding features (if Earth Engine is available)…")
         pcs = self._embedding_pcs(ir, boxes)
         if pcs is not None:
             feats += list(pcs.T)

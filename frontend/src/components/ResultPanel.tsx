@@ -25,7 +25,7 @@ export function ResultPanel({ run }: { run: RunState }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [showTiles, setShowTiles] = useState(false);
   const { user } = useAuth();
-  const [mailTo, setMailTo] = useState(user && !user.guest ? user.email : "");
+  const [mailTo, setMailTo] = useState(user?.email ?? "");
   const [mailStatus, setMailStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const navigate = useNavigate();
 
@@ -250,7 +250,8 @@ export function ResultPanel({ run }: { run: RunState }) {
             <button className="btn btn-accent" disabled={!!busy} onClick={createReport}>
               {busy === "report" ? "Creating…" : "Create report for officials"}
             </button>
-            <a className="btn" href={authUrl(`/api/queries/${run.id}/report.pdf`)} download>Download PDF</a>
+            <a className="btn" href={authUrl(`/api/queries/${run.id}/report.pdf?style=simple`)} download>Summary PDF (plain language)</a>
+            <a className="btn" href={authUrl(`/api/queries/${run.id}/report.pdf`)} download>Technical PDF</a>
             {!census && <button className="btn" disabled={!!busy} onClick={() => act("exhaustive", async () =>
               setExhaustive(await post(`/api/queries/${run.id}/exhaustive`)))}>
               {busy === "exhaustive" ? "Analysing every tile…" : res.data_mode === "live" ? "Compare with every tile (slow)" : "Compare with every tile"}

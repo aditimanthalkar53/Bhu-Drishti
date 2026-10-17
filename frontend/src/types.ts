@@ -56,6 +56,7 @@ export interface CompileInfo {
   parser: string;
   assumptions: string[];
   warnings: string[];
+  suggested_region?: Region | null;
 }
 
 export interface EstimateView {
