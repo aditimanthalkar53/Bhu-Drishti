@@ -12,6 +12,7 @@ import { PostgresStore } from "./store/postgres.js";
 import { SqliteStore } from "./store/sqlite.js";
 import { setAutoEmail } from "./delivery.js";
 import type { Store } from "./store/types.js";
+import { webRoutes } from "./web.js";
 
 export async function buildApp(config: Config, opts: { store?: Store; logger?: boolean } = {}) {
   const app = Fastify({
@@ -38,6 +39,7 @@ export async function buildApp(config: Config, opts: { store?: Store; logger?: b
     app.addHook("onClose", async () => scheduler.stop());
   }
   app.decorate("scheduler", scheduler);
+  if (config.staticDir) await webRoutes(app, config.staticDir, config.frameAncestors);
 
   app.log.info(`store=${store.constructor.name} engine=${config.engineUrl} scheduler=${config.scheduler} ` +
     `guest=${config.allowGuest} autoEmail=${config.reportAutoEmail.length} address(es)`);

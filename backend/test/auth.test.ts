@@ -141,3 +141,42 @@ test("a run lost to an engine restart is closed as failed, not left running", as
     await f.close();
   }
 });
+
+
+test("single-container mode serves the website with security headers and client-side routes", async () => {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const web = join(dir, "web");
+  mkdirSync(join(web, "assets"), { recursive: true });
+  writeFileSync(join(web, "index.html"), "<!doctype html><title>Bhu-Drishti</title>");
+  writeFileSync(join(web, "assets", "app-123.js"), "console.log(1)");
+  const engine = await fakeEngine();
+  const port = (engine.server.address() as any).port;
+  after(() => engine.close());
+  let app = await buildApp(cfg(port, { SQLITE_PATH: ":memory:", STATIC_DIR: web }), { logger: false });
+  try {
+    const home = await app.inject({ url: "/" });
+    assert.equal(home.statusCode, 200);
+    assert.match(home.body, /Bhu-Drishti/);
+    assert.match(String(home.headers["content-security-policy"]), /frame-ancestors 'self'$/);
+    assert.equal(home.headers["x-frame-options"], "SAMEORIGIN");
+    const route = await app.inject({ url: "/app/dashboard" });   // client-side route → index.html
+    assert.equal(route.statusCode, 200);
+    assert.match(route.body, /Bhu-Drishti/);
+    assert.match(String((await app.inject({ url: "/assets/app-123.js" })).headers["cache-control"]), /immutable/);
+    const missingApi = await app.inject({ url: "/api/nope" });
+    assert.equal(missingApi.statusCode, 404);
+    assert.equal(missingApi.json().error, "not found");
+    assert.equal((await app.inject({ url: "/api/health" })).statusCode, 200);
+    assert.equal((await app.inject({ url: "/api/projects" })).statusCode, 401);
+  } finally {
+    await app.close();
+  }
+  app = await buildApp(cfg(port, { SQLITE_PATH: ":memory:", STATIC_DIR: web, FRAME_ANCESTORS: "https://huggingface.co" }), { logger: false });
+  try {
+    const home = await app.inject({ url: "/" });
+    assert.match(String(home.headers["content-security-policy"]), /frame-ancestors 'self' https:\/\/huggingface\.co/);
+    assert.equal(home.headers["x-frame-options"], undefined);
+  } finally {
+    await app.close();
+  }
+});

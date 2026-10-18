@@ -1,276 +1,104 @@
-# Deploying Bhu-Drishti
+# Deploying Bhu-Drishti (free, no server)
 
-Two ways to put Bhu-Drishti online:
+Bhu-Drishti is **one Docker container**: the website, the API and the AEQE satellite engine together. It needs
+nothing else to start, so it runs on a free host:
 
-* **Option A: Render (no server to manage).** Connect the GitHub repository, fill in a form, and Render builds and runs
-  everything, with HTTPS, automatic deploys from `main`, and restarts handled for you. About 30 minutes. Start here.
-* **Option B: your own Linux server** with Docker. More control and cheaper at scale; you look after the machine.
-
-Why not "serverless" functions (Vercel, Netlify, Lambda)? An analysis can run for many minutes, the engine needs large
-satellite-imagery libraries (GDAL), monitors run on a schedule, and accounts live in a database file on disk. Function
-platforms stop requests after seconds to a few minutes and keep no disk, so the app needs always-on containers. Render
-gives you exactly that without a server.
-
-# Option A: Render (no server)
-
-```
-Internet ──HTTPS──▶ bhu-drishti-web      (public: website + /api proxy)
-                         │ Render private network
-                         ▼
-                    bhu-drishti-backend  (private: API, SQLite on a 1 GB disk)
-                         │
-                         ▼
-                    bhu-drishti-engine   (private: AEQE, 5 GB disk for saved results)
-```
-
-Everything is described in [`render.yaml`](render.yaml) (a Render “Blueprint”). All three services run in Render’s
-**Frankfurt** region, the closest to the satellite archives, so live questions are fast.
-
-**Cost:** roughly **$40 per month**. The plan names below are Render’s instance types; prices are from Render’s pricing
-page and can change, so check [render.com/pricing](https://render.com/pricing).
-
-| Service | Instance | About |
+| Piece | Free service | Why |
 |---|---|---|
-| bhu-drishti-web | 0.5 CPU, 512 MB | $7 |
-| bhu-drishti-backend | 0.5 CPU, 512 MB + 1 GB disk | $7.25 |
-| bhu-drishti-engine | 1 CPU, 2 GB + 5 GB disk | $26.25 |
+| The app | **Hugging Face Spaces** (Docker Space, free “CPU basic”: 2 vCPU, 16 GB RAM) | Enough memory for live satellite reads; builds straight from the code |
+| Accounts and reports | **Neon** Postgres (free plan) | Keeps users and reports when the Space restarts or redeploys |
+| Email | **Gmail** with an App Password (or any SMTP account) | Password resets and report emails |
+| Data | Planetary Computer, NASA FIRMS, Copernicus, NASA Earthdata | All free; keys are free to request |
 
-To save $7 you can switch the **web** service to the Free instance type later: it then sleeps after 15 idle minutes and
-takes about a minute to wake. The two private services cannot be free.
+After a one-time setup (about 20 minutes), **every push to `main` deploys itself**: GitHub runs the tests, then
+copies the app to the Space, and Hugging Face rebuilds it.
 
-## A1. Before you start
+Free-tier limits worth knowing (check each provider’s current terms):
 
-* `main` on GitHub has the latest code, and its CI run (GitHub → **Actions**) is green.
-* Have these ready: email (SMTP) settings for password resets and reports, and your data keys: NASA FIRMS map key,
-  Copernicus CDSE client ID and secret, NASA Earthdata token (Earth Engine is optional).
+* A free Space **sleeps after about 48 hours without visitors** and wakes on the next visit (about a minute).
+  Scheduled monitors don’t run while it sleeps.
+* A free Space’s own disk is **not permanent**. That is why accounts go to Neon. Saved analysis results and the
+  satellite tile cache are rebuilt as needed after a restart.
+* Neon’s free plan includes a small database (hundreds of MB), far more than Bhu-Drishti needs for accounts and
+  reports.
 
-## A2. Create the services
+## 1. Free database (Neon), 5 minutes
 
-1. Sign up at [render.com](https://render.com) with the GitHub account that can see the repository, and add a payment
-   method (private services and disks are paid).
-2. **New → Blueprint**, choose `aditimanthalkar53/Bhu-Drishti`, branch `main`. Render reads `render.yaml` and lists the
-   three services. (If the repository is not listed, use **Configure GitHub App** to give Render access to it; the
-   repository owner may need to approve.)
-3. Render asks for the values marked secret in `render.yaml`:
+1. Sign up at [neon.tech](https://neon.tech) and create a project (region: any; Frankfurt is closest to the
+   satellite data and the Space).
+2. Copy the **connection string**. It looks like
+   `postgresql://user:password@ep-xxxx.eu-central-1.aws.neon.tech/neondb?sslmode=require`.
 
-   | Variable | What to enter |
+Bhu-Drishti creates its tables on first start. (Skip this step to try things out: the app then keeps accounts in a
+file inside the Space, which is wiped on restart.)
+
+## 2. The Space, 5 minutes
+
+1. Sign up at [huggingface.co](https://huggingface.co).
+2. **New Space**: name `bhu-drishti`, SDK **Docker** (blank template), hardware **CPU basic (free)**, visibility
+   Public (Private works too, but then only you can open it).
+3. In the Space: **Settings → Variables and secrets**. Add these as **secrets**:
+
+   | Secret | Value |
    |---|---|
-   | `PUBLIC_APP_URL` and `CORS_ORIGIN` | `https://bhu-drishti-web.onrender.com` (the website’s address; if Render adds a suffix to the name, fix it in step A4) |
-   | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | from your email service (Gmail: `smtp.gmail.com`, `465`, an App Password) |
-   | `REPORT_AUTO_EMAIL` | address(es) that receive every new report |
-   | `NASA_FIRMS_MAP_KEY`, `CDSE_CLIENT_ID`, `CDSE_CLIENT_SECRET`, `EARTHDATA_TOKEN` | your data keys |
-   | `GOOGLE_CLOUD_PROJECT_ID` | leave empty unless you use Earth Engine |
+   | `DATABASE_URL` | the Neon connection string |
+   | `JWT_SECRET` | a long random value, e.g. from `openssl rand -base64 48` or a password generator (48+ characters) |
+   | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | e.g. `smtp.gmail.com` / `465` / your Gmail / a Gmail **App Password** / your Gmail |
+   | `REPORT_AUTO_EMAIL` | where every new report is emailed (comma-separated) |
+   | `NASA_FIRMS_MAP_KEY` | fires: [firms.modaps.eosdis.nasa.gov/api/map_key](https://firms.modaps.eosdis.nasa.gov/api/map_key/) |
+   | `CDSE_CLIENT_ID` / `CDSE_CLIENT_SECRET` | Copernicus Data Space OAuth client |
+   | `EARTHDATA_TOKEN` | NASA Earthdata token |
 
-   `JWT_SECRET` is generated by Render automatically.
-4. Click **Apply**. The first build takes about 10 minutes (the engine image is large). Each service shows **Live** when
-   it is ready.
+   All are optional except `JWT_SECRET` and `DATABASE_URL` for a real deployment. The public address for
+   password-reset links is filled in automatically from the Space.
+4. **Settings → Access Tokens** (in your Hugging Face profile, not the Space): create a token with **Write**
+   permission and copy it.
 
-## A3. Check it
+## 3. Connect GitHub to the Space, 3 minutes
 
-Open the **bhu-drishti-web** service and click its `onrender.com` link. Then:
+In the GitHub repository: **Settings → Secrets and variables → Actions**
+
+* **Secrets → New repository secret:** `HF_TOKEN` = the Hugging Face write token.
+* **Variables → New repository variable:** `HF_SPACE` = your Space id, e.g. `your-hf-name/bhu-drishti`.
+
+(Adding these needs admin rights on the repository; ask the repository owner if the Settings tab is missing.)
+
+## 4. Deploy
+
+Push anything to `main`, or open **Actions → Deploy to Hugging Face → Run workflow**. The workflow waits for CI,
+copies the app to the Space, and Hugging Face builds it (about 10 minutes the first time; the Space page shows the
+build log). Then open `https://huggingface.co/spaces/your-hf-name/bhu-drishti`, or the direct address
+`https://your-hf-name-bhu-drishti.hf.space`.
+
+From now on, every change merged into `main` goes live by itself.
+
+## 5. Check it
 
 1. Create an account, sign out, and try **Forgot password?**: the email should arrive.
-2. In the app open **Data sources**: each provider you configured shows as working.
-3. Ask *“How many fire detections were there in the last 10 days?”* for a Punjab district, then a flood question for
-   an Assam district (the first run in a district takes a few minutes; later ones are faster).
-4. Open the **Summary PDF** and check the automatic report email.
+2. **Data sources** in the app: each provider you configured shows as working.
+3. Ask *“How many fire detections were there in the last 10 days?”* for a Punjab district, then a flood question
+   for an Assam district (the first run in a district takes a few minutes).
+4. Restart the Space (**Settings → Restart**) and sign in again: your account is still there (it lives in Neon).
 
-## A4. Your own domain (optional)
-
-**bhu-drishti-web → Settings → Custom Domains → Add**, enter e.g. `bhudrishti.example.in`, and create the DNS record
-Render shows you (a CNAME). Render issues the HTTPS certificate itself. Then in **bhu-drishti-backend → Environment**
-change `PUBLIC_APP_URL` and `CORS_ORIGIN` to `https://bhudrishti.example.in` and save (the API restarts).
-
-## A5. Earth Engine (optional)
-
-**bhu-drishti-engine → Environment → Secret Files → Add**: name `service-account.json`, paste the service-account JSON.
-Set `GOOGLE_CLOUD_PROJECT_ID`, save. The file appears at `/etc/secrets/service-account.json`, which `render.yaml`
-already points to.
-
-## A6. Day to day
-
-* **Updates:** merge to `main`. Render redeploys each service automatically once CI passes (services with a disk restart
-  briefly during a deploy).
-* **Logs:** each service’s **Logs** tab. **Restart:** **Manual Deploy → Restart service**.
-* **Backups:** Render takes automatic daily snapshots of each disk; restore one from the service’s **Disks** tab.
-  The user database is on **bhu-drishti-backend**’s disk.
-* **Changing settings:** edit them in the service’s **Environment** tab; values you set there are kept when
-  `render.yaml` changes.
-
-| Problem | What to do |
-|---|---|
-| Website shows **502** | Open **bhu-drishti-backend → Logs**; the API may still be starting or missing a setting. |
-| “too many requests” for everyone at sign-in | In bhu-drishti-backend set `TRUST_PROXY` to `3` and save. |
-| Reset emails link to the wrong address | Fix `PUBLIC_APP_URL` in bhu-drishti-backend. |
-| Live questions fail | **bhu-drishti-engine → Logs**: missing or wrong data keys are reported at start-up. |
-
-# Option B: your own server
-
-This puts Bhu-Drishti on one Linux server with HTTPS on your own domain. It takes about an hour the first time.
-Everything runs in Docker; the only things installed on the server itself are Docker, nginx and certbot.
-
-```
-Internet ──HTTPS──▶ nginx + certbot on the server (443)
-                        │
-                        ▼  127.0.0.1:8080
-                   web container (site + /api proxy)
-                        │
-          ┌─────────────┴─────────────┐
-          ▼                           ▼
-   backend (API, SQLite)  ──▶  engine (AEQE, satellite data)
-```
-
-Only the website is reachable from outside. The API, the engine and n8n listen on the server's loopback address only.
-
-## 1. What you need
-
-| Item | Notes |
-|---|---|
-| A Linux server (VM) | Ubuntu 24.04 or 22.04 LTS, **2 vCPU, 4 GB RAM, 30 GB disk** minimum (the engine image is ~1.4 GB, and live raster reads need memory). |
-| Region | Satellite imagery is read from Microsoft Planetary Computer in **West Europe**. A server there (e.g. Azure West Europe, AWS eu-west/eu-central, Hetzner Germany) answers live questions several times faster than one in India. |
-| A domain | e.g. `bhudrishti.example.in`, with access to its DNS settings. |
-| An email-sending account | For password resets and reports. A transactional service (Brevo, Amazon SES, Mailgun, Zoho, SendGrid) is better than a personal Gmail. |
-| Data-provider keys | NASA FIRMS map key (fires), Copernicus CDSE client, NASA Earthdata token, Google Earth Engine service account (optional). Planetary Computer needs no key. |
-
-## 2. Prepare the server
+## Run it on your own computer
 
 ```bash
-ssh root@YOUR_SERVER_IP
-apt update && apt upgrade -y
-adduser deploy && usermod -aG sudo deploy        # a normal user to work as
-curl -fsSL https://get.docker.com | sh            # Docker Engine + Compose plugin
-usermod -aG docker deploy
-ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw enable   # firewall: only SSH and web
-exit
-```
-
-Log back in as `deploy`, then check: `docker compose version` (v2 or newer).
-
-## 3. Point your domain at the server
-
-In your DNS provider add an **A record**: `bhudrishti.example.in → YOUR_SERVER_IP` (and an AAAA record if the server
-has IPv6). Wait until `ping bhudrishti.example.in` shows the server's address.
-
-## 4. Get the code
-
-```bash
-sudo mkdir -p /opt/bhu-drishti && sudo chown deploy: /opt/bhu-drishti
-git clone https://github.com/aditimanthalkar53/Bhu-Drishti.git /opt/bhu-drishti
-cd /opt/bhu-drishti
-```
-
-## 5. Configure `.env`
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Set at least these (everything else can stay as it is):
-
-| Setting | Value |
-|---|---|
-| `JWT_SECRET` | output of `openssl rand -base64 48` (**required**: the stack refuses to start without it) |
-| `WEB_PORT` | `127.0.0.1:8080` (only the HTTPS proxy on the same server may reach the site) |
-| `PUBLIC_APP_URL` and `WEB_ORIGIN` | `https://bhudrishti.example.in` |
-| `TRUST_PROXY` | `2` (the HTTPS proxy plus the web container) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | from your email service |
-| `REPORT_AUTO_EMAIL` | where every new report is emailed (comma-separated) |
-| `NASA_FIRMS_MAP_KEY`, `CDSE_CLIENT_ID`, `CDSE_CLIENT_SECRET`, `EARTHDATA_TOKEN` | your data keys |
-
-Google Earth Engine (optional): copy the service-account JSON to `engine/credentials/service-account.json` and set
-`GOOGLE_CLOUD_PROJECT_ID`. Then lock the secrets down: `chmod 600 .env engine/credentials/*`.
-
-## 6. Start Bhu-Drishti
-
-```bash
+cp .env.example .env        # optional: fill in keys; the app starts without them
 docker compose up -d --build
-docker compose ps          # wait until engine and backend show "(healthy)", about a minute
-curl -s http://127.0.0.1:8080/api/health    # {"ok":true, … "engine":{"ok":true, …}}
 ```
 
-The first build takes 5–10 minutes. The data lives in Docker volumes (`backend-data`, `engine-data`) and survives
-restarts and updates.
-
-## 7. HTTPS with nginx and Let’s Encrypt
-
-```bash
-sudo apt install -y nginx certbot python3-certbot-nginx
-sudo cp deploy/nginx-https.conf.example /etc/nginx/sites-available/bhu-drishti
-sudo sed -i 's/bhudrishti.example.in/YOUR_DOMAIN/g' /etc/nginx/sites-available/bhu-drishti
-```
-
-The example already has the HTTPS server block. For the very first certificate, nginx must start without it: open the
-file and comment out the second `server { … }` block (port 443), then:
-
-```bash
-sudo ln -s /etc/nginx/sites-available/bhu-drishti /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot certonly --nginx -d YOUR_DOMAIN       # issues the certificate
-```
-
-Uncomment the 443 block again, then `sudo nginx -t && sudo systemctl reload nginx`. Certbot renews the certificate
-automatically (`sudo certbot renew --dry-run` to check).
-
-Open `https://YOUR_DOMAIN`: the website loads, **Open app** asks you to sign in, and you can create the first account.
-
-## 8. Check that everything works
-
-1. Create an account, sign out, and use **Forgot password?**: the reset email should arrive.
-2. In the app open **Data sources**: each provider you configured shows as working.
-3. Ask *“How many fire detections were there in the last 10 days?”* for a Punjab district (quick), then a flood
-   question for an Assam district (can take several minutes the first time).
-4. Open the result’s **Summary PDF**, and check that the automatic report email arrived at `REPORT_AUTO_EMAIL`.
-
-## 9. Backups
-
-```bash
-crontab -e
-# add this line: daily at 02:00, keeps the newest 14 backups
-0 2 * * * cd /opt/bhu-drishti && ./scripts/backup.sh >> backups/backup.log 2>&1
-```
-
-Each backup (`backups/<date-time>/`) holds the user/report database and the engine’s saved results. **Copy the
-`backups/` folder off the server regularly** (e.g. `rsync` to another machine or object storage). To restore:
-
-```bash
-./scripts/restore.sh backups/20261018-020000
-```
-
-## 10. Updating to a new version
-
-```bash
-cd /opt/bhu-drishti
-./scripts/backup.sh                 # safety copy first
-git pull
-docker compose up -d --build        # rebuilds and replaces the containers; data volumes are kept
-docker compose ps                   # all healthy again
-```
-
-Every push is checked by GitHub Actions (`.github/workflows/ci.yml`): all tests, the production build, and a full
-start of the Docker stack. Deploy only commits whose CI run is green.
-
-## 11. Optional: n8n for report delivery
-
-```bash
-docker compose --profile n8n up -d n8n
-ssh -L 5678:127.0.0.1:5678 deploy@YOUR_SERVER_IP    # from your laptop, then open http://localhost:5678
-```
-
-n8n is never published to the internet; reach it through the SSH tunnel above. Setup steps: README → “n8n report
-delivery”.
+Open http://localhost:8080. Data is kept in the `app-data` Docker volume. Without Docker Compose:
+`docker build -t bhu-drishti . && docker run -p 7860:7860 bhu-drishti`, then open http://localhost:7860.
 
 ## Troubleshooting
 
 | Symptom | What to do |
 |---|---|
-| `docker compose up` says `set JWT_SECRET in .env` | Set a long random `JWT_SECRET` in `.env`. |
-| Site shows **502 Bad Gateway** | `docker compose ps` and `docker compose logs backend --tail 50`. |
-| Sign-in fails with “too many requests” for everyone | `TRUST_PROXY` is wrong: `2` behind the server’s nginx, `1` without it. |
-| Password-reset links point to localhost | Set `PUBLIC_APP_URL` to `https://YOUR_DOMAIN`, then `docker compose up -d`. |
-| Emails don’t arrive | Check the SMTP values; `docker compose logs backend | grep -i smtp`. Gmail needs an App Password. |
-| Live questions are slow or time out | Normal for the first run in a district (it reads land cover and tiles it once). Consider a West-Europe server. |
-| Engine unhealthy | `docker compose logs engine --tail 80`; a missing or wrong data key is reported at startup. |
-
-Useful commands: `docker compose logs -f backend`, `docker compose restart engine`, `docker stats`.
+| Space shows **Build error** | Open the build log on the Space page. Re-run **Actions → Deploy to Hugging Face**. |
+| Deploy workflow fails at “Push to the Space” | `HF_TOKEN` needs **Write** permission; `HF_SPACE` must be exactly `owner/space-name`. |
+| Everyone is signed out after a restart | Set `JWT_SECRET` as a Space secret (otherwise a new one is generated on each start). |
+| Accounts disappear after a restart | Set `DATABASE_URL` (Neon). Without it accounts live in the Space’s temporary disk. |
+| Reset emails don’t arrive | Check the `SMTP_*` secrets; Gmail needs an App Password, not your normal password. |
+| “too many requests” at sign-in for everyone | Add the secret `TRUST_PROXY` = `2`. |
+| Live questions fail | Space **Logs** tab: missing or wrong data keys are reported at start-up. |
+| Website loads slowly after a quiet period | The free Space was asleep; it wakes in about a minute. |

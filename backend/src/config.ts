@@ -14,11 +14,14 @@ export interface Config {
   publicUrl: string;
   allowPrivateWebhooks: boolean;
   scheduler: boolean;
-  /** Behind nginx: take the client IP from X-Forwarded-For (only safe when the API port is not public). */
-  /** false, or the number of reverse proxies in front of the API (1 = the web container, 2 = plus a TLS proxy). */
+  /** false, or the number of reverse proxies in front of the API (e.g. 1 behind a hosting platform's proxy). */
   trustProxy: boolean | number;
   /** Live satellite runs a single user may have in flight at once. */
   maxConcurrentRuns: number;
+  /** built website to serve from the API (single-container deploy); unset = API only */
+  staticDir: string | null;
+  /** extra sites allowed to embed the app in a frame (e.g. https://huggingface.co) */
+  frameAncestors: string[];
   /** Public address of the website, used in password-reset links. */
   appUrl: string;
 }
@@ -32,8 +35,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     port,
     host: env.HOST ?? "0.0.0.0",
-    // ENGINE_HOSTPORT ("host:port", as hosting platforms hand out private-service addresses) is an alternative to ENGINE_URL
-    engineUrl: (env.ENGINE_URL ?? (env.ENGINE_HOSTPORT ? `http://${env.ENGINE_HOSTPORT}` : "http://localhost:8000")).replace(/\/$/, ""),
+    engineUrl: (env.ENGINE_URL ?? "http://localhost:8000").replace(/\/$/, ""),
     jwtSecret,
     databaseUrl: env.DATABASE_URL || undefined,
     sqlitePath: env.SQLITE_PATH || "./data/bhu-drishti.sqlite",
@@ -46,6 +48,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     scheduler: (env.MONITOR_SCHEDULER ?? "true") === "true",
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     maxConcurrentRuns: Math.max(1, Number(env.MAX_CONCURRENT_RUNS ?? 2)),
+    staticDir: env.STATIC_DIR || null,
+    frameAncestors: (env.FRAME_ANCESTORS ?? "").split(/[\s,]+/).filter(Boolean),
     appUrl: (env.PUBLIC_APP_URL ?? "http://localhost:8081").replace(/\/$/, ""),
   };
 }

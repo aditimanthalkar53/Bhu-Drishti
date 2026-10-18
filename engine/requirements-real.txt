@@ -1,4 +1,4 @@
-# Live data (default in Docker: WITH_REAL_DATA=true)
+# Live data (always installed in the Docker image)
 -r requirements.txt
 pystac-client>=0.8
 planetary-computer>=1.0
