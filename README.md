@@ -144,7 +144,8 @@ every report before an official receives it, and each delivery is logged and aud
 
 ## Production
 
-**Step-by-step server setup: [DEPLOY.md](DEPLOY.md)** (server, domain, HTTPS, backups, updates, troubleshooting).
+**Deploying: [DEPLOY.md](DEPLOY.md).** Option A runs it on Render without a server (`render.yaml` Blueprint);
+Option B is your own Linux server with Docker (domain, HTTPS, backups, updates, troubleshooting).
 
 What the repo already does: only the `web` container is published (engine, backend and n8n listen on 127.0.0.1),
 healthchecks and `restart: unless-stopped` on every service, security headers and a CSP in `frontend/nginx.conf`,
