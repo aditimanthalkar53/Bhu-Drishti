@@ -37,23 +37,16 @@ jobs:
       - run: npm run build
 
   deploy-smoke:
-    # Builds every image and starts the stack exactly as a server would, then checks it end to end.
+    # Builds the single image and starts it with NO configuration, exactly like a fresh deploy, then checks it.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Test configuration
-        run: |
-          {
-            echo "JWT_SECRET=$(openssl rand -hex 32)"
-            echo "AEQE_PROVIDER=simulated"
-            echo "WITH_REAL_DATA=false"
-            echo "WEB_PORT=8080"
-          } > .env
       - run: docker compose config -q
-      - run: docker compose up -d --build --wait --wait-timeout 300 engine backend web
+      - run: docker compose up -d --build --wait --wait-timeout 300 app
       - name: End-to-end through the website
         run: |
           curl -fsS http://localhost:8080/ | grep -q "<title>"
+          curl -fsS http://localhost:8080/app/dashboard | grep -q "<title>"
           curl -fsS http://localhost:8080/api/health | grep -q '"engine":{"ok":true'
           curl -fsSI http://localhost:8080/ | grep -qi "content-security-policy"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/projects)" = "401"
