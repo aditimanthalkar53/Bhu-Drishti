@@ -119,3 +119,25 @@ test("password reset is single-use and expires; password change signs out other 
     await engine.close();
   }
 });
+
+test("a run lost to an engine restart is closed as failed, not left running", async () => {
+  const f = Fastify();
+  f.get("/health", async () => ({ ok: true }));
+  f.post("/queries", async (_req, reply) => reply.code(201).send({ id: "lostjob1", compile: {}, plan: { ok: true } }));
+  f.get("/queries/:id", async (_req, reply) => reply.code(404).send({ detail: "no job" }));   // the engine restarted
+  await f.listen({ port: 0, host: "127.0.0.1" });
+  const app = await buildApp(cfg((f.server.address() as any).port, { SQLITE_PATH: ":memory:" }), { logger: false });
+  try {
+    const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "lost@example.org", password: "first-pass-123" } });
+    const H = { authorization: `Bearer ${reg.json().token}` };
+    const [p] = (await app.inject({ url: "/api/projects", headers: H })).json();
+    const started = await app.inject({ method: "POST", url: `/api/projects/${p.id}/queries`, headers: H, payload: { question: "flooded cropland?", region_id: "x" } });
+    assert.equal(started.statusCode, 201);
+    const got = (await app.inject({ url: "/api/queries/lostjob1", headers: H })).json();
+    assert.equal(got.session.status, "failed");
+    assert.match(got.session.answer, /interrupted/);
+  } finally {
+    await app.close();
+    await f.close();
+  }
+});

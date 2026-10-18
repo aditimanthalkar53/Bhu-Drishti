@@ -64,7 +64,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-}
       ALLOW_GUEST: "false"
       REPORT_AUTO_EMAIL: ${REPORT_AUTO_EMAIL:-}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env to a long random value (openssl rand -base64 48)}
       CORS_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
       NODE_ENV: production
       TRUST_PROXY: ${TRUST_PROXY:-1}           # proxies in front of the API: 1 = web container, 2 = plus an HTTPS proxy

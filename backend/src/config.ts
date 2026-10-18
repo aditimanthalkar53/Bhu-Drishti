@@ -24,9 +24,9 @@ export interface Config {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const jwtSecret = env.JWT_SECRET ?? "dev-only-change-me";
-  if (env.NODE_ENV === "production" && (jwtSecret === "dev-only-change-me" || jwtSecret === "change-me-in-production")) {
-    throw new Error("JWT_SECRET must be set to a real secret in production");
+  const jwtSecret = env.JWT_SECRET || "dev-only-change-me";
+  if (env.NODE_ENV === "production" && (jwtSecret === "dev-only-change-me" || jwtSecret === "change-me-in-production" || jwtSecret.length < 32)) {
+    throw new Error("JWT_SECRET must be set to a random secret of at least 32 characters in production (openssl rand -base64 48)");
   }
   const port = Number(env.PORT ?? 4000);
   return {

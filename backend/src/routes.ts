@@ -149,7 +149,13 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
       return { session: current, engine: summary };
     } catch (e) {
       if (e instanceof EngineError && e.status === 404) {
-        // engine restarted: the job is gone but the session record remains
+        // engine restarted: the job is gone but the session record remains. A run that was still going
+        // can never finish now, so close it instead of leaving it "running" forever.
+        if (s.status === "running" || s.status === "queued") {
+          const patch = { status: "failed" as const, answer: "This analysis was interrupted because the analysis engine restarted. Please run the question again." };
+          await store.updateSession(s.id, patch);
+          return { session: { ...s, ...patch }, engine: null };
+        }
         return { session: s, engine: null };
       }
       return sendEngineError(reply, e);

@@ -100,7 +100,7 @@ git-ignored.
 
 ```bash
 cd engine && pytest                         # 65 offline tests: estimators, compiler, adapters (mocked HTTP), masks, census, advisory, job persistence
-cd backend && npm test                      # 18 tests: SQLite accounts, no guests, password change / reset / sign-out everywhere, ownership, monitors → alerts → approval → signed webhooks → n8n callback, PDFs
+cd backend && npm test                      # 19 tests: SQLite accounts, no guests, password change / reset / sign-out everywhere, interrupted runs, ownership, monitors → alerts → approval → signed webhooks → n8n callback, PDFs
 cd frontend && npm run build                # type-check + production build
 cd engine && python scripts/smoke_sources.py          # bounded live, read-only check of every provider
 cd engine && python scripts/live_e2e.py flood|fire|fire_find|built|burned   # live end-to-end runs
@@ -144,11 +144,14 @@ every report before an official receives it, and each delivery is logged and aud
 
 ## Production
 
+**Step-by-step server setup: [DEPLOY.md](DEPLOY.md)** (server, domain, HTTPS, backups, updates, troubleshooting).
+
 What the repo already does: only the `web` container is published (engine, backend and n8n listen on 127.0.0.1),
 healthchecks and `restart: unless-stopped` on every service, security headers and a CSP in `frontend/nginx.conf`,
 rate-limited auth, single-use password-reset links, server-side sign-out, per-user limits on parallel analyses,
 finished engine jobs saved to disk (answers, maps and PDFs survive an engine restart), the backend refuses to start
-with a default `JWT_SECRET`, and CI (`.github/workflows/ci.yml`) runs every test suite and the Docker build.
+with a default `JWT_SECRET`, and CI (`.github/workflows/ci.yml`) runs every test suite, then builds and starts the whole Docker stack and checks it
+end to end. Containers run as unprivileged users.
 
 Checklist for a server:
 
