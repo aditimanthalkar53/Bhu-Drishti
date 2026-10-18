@@ -17,27 +17,24 @@ Everything merged to `main` after 0.2.0 (`c2b9194`).
   automatically to `REPORT_AUTO_EMAIL`.
 - **Results survive restarts:** finished engine runs are saved to disk, so answers, maps and PDFs remain available
   after a restart.
-- **Deployment:**
-  - production Docker Compose setup with health checks and restart policies
-  - nginx security headers and a Content Security Policy
-  - an HTTPS proxy example in `deploy/`
-  - `render.yaml` Blueprint for hosting on Render without a server
+- **Free deployment in one go:**
+  - one container (root `Dockerfile`) holds the website, API and AEQE engine; it starts with no configuration
+  - automatic deploys of `main` to a free Hugging Face Space after CI passes (`deploy-hf.yml`)
+  - accounts can live in a free Neon Postgres database (`DATABASE_URL`)
   - a step-by-step [DEPLOY.md](DEPLOY.md)
-- **Operations:**
-  - `scripts/backup.sh` and `scripts/restore.sh`
-  - GitHub Actions CI that runs all tests, then builds and starts the full Docker stack and checks it end to end
+- **Security headers and a Content Security Policy** on every page.
+- **CI** runs all tests, then builds the container, starts it with no configuration and checks it end to end.
 - **Docs:** a project guide (`docs/Bhu-Drishti_Project_Guide.pdf`) and the presentation deck (`Bhu-Drishti.pdf`).
 
 ### Changed
 - **Guest mode removed:** existing guest tokens are refused.
-- **Containers run as unprivileged users:** an entrypoint fixes ownership of data volumes created by earlier
-  root-run versions.
-- **Only the website is exposed:** the engine, API and n8n listen on loopback.
-- **nginx config is a template:** the port, API address and DNS resolver come from the environment.
+- **Three containers became one:** the API serves the website; nginx, the per-service Dockerfiles, the Render
+  Blueprint, the HTTPS proxy example and the backup scripts are removed (nothing in the setup costs money).
+- **The container runs as an unprivileged user** (uid 1000, as Hugging Face Spaces expects).
 - **New settings:**
   - `TRUST_PROXY` is now a count of proxy hops
-  - `PUBLIC_APP_URL`, `MAX_CONCURRENT_RUNS` and `ENGINE_HOSTPORT` are new
-  - `JWT_SECRET` is required and must be at least 32 characters in production
+  - `PUBLIC_APP_URL`, `MAX_CONCURRENT_RUNS`, `STATIC_DIR` and `FRAME_ANCESTORS` are new (the container sets them)
+  - `JWT_SECRET` must be at least 32 characters in production; the container generates one if it is missing
 - **UI:**
   - the user menu stays above the map
   - the globe is redesigned
@@ -47,20 +44,17 @@ Everything merged to `main` after 0.2.0 (`c2b9194`).
 - **Rate limits:** clients can no longer spoof `X-Forwarded-For` to get around them.
 - **Account probing:** "Forgot password" no longer reveals whether an account exists.
 - **Interrupted runs:** a run cut off by an engine restart is marked failed instead of staying "running".
-- **502 errors:** nginx re-resolves the API container, so recreating it doesn't cause them.
-- **Linux builds:** the frontend image no longer copies host `node_modules` into its build.
-- **Backup and restore:** backups exclude the tile cache and recover from interrupted runs. Restores set file
-  ownership and always restart services.
+- **Linux builds:** the image no longer copies host `node_modules` into its build.
 
 ### Upgrade notes
-- Set `JWT_SECRET` in `.env` (32+ characters, e.g. `openssl rand -base64 48`) before `docker compose up`.
 - Guest sessions no longer work. Users need to create an account.
-- Data volumes from earlier versions are migrated automatically on first start.
-- Behind an extra HTTPS proxy, set `TRUST_PROXY=2` and `PUBLIC_APP_URL=https://your-domain`.
+- Docker Compose now has a single `app` service with an `app-data` volume. Data from the old `backend-data`
+  volume (`bhu-drishti.sqlite`) can be copied into it; on a free host use `DATABASE_URL` instead.
+- Set `JWT_SECRET` yourself so sign-ins survive a rebuild.
 
 ### Tests
 - Engine: 65 passed.
-- Backend: 19 passed.
+- Backend: 20 passed.
 - Frontend production build: passes.
-- End to end against the production Docker stack: 18 of 18 checks passed, including live NASA FIRMS and
+- End to end against the single container (SQLite and Postgres): 18 of 18 checks passed, including live NASA FIRMS and
   Sentinel-1 queries and SMTP delivery.
