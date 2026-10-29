@@ -162,9 +162,16 @@ export class MonitorScheduler {
 
   private async waitForJob(id: string, maxMs = 45 * 60_000): Promise<any> {
     const t0 = Date.now();
+    let finishedAt = 0;
     while (Date.now() - t0 < maxMs) {
       const s = await this.engine.get<any>(`/queries/${id}`);
-      if (!["queued", "running"].includes(s.status)) return s;
+      if (!["queued", "running"].includes(s.status)) {
+        // the engine answers before supporting evidence (rainfall, MODIS) arrives; a report is not urgent, so give
+        // the evidence up to two minutes to land in the result
+        const pending = s.result?.supporting_evidence?.[0]?.id === "pending";
+        finishedAt ||= Date.now();
+        if (!pending || Date.now() - finishedAt > 120_000) return s;
+      }
       await new Promise((r) => setTimeout(r, this.opts.pollMs ?? 5000));
     }
     try { await this.engine.post(`/queries/${id}/stop`); } catch { /* ignore */ }

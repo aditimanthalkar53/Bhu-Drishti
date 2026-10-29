@@ -25,6 +25,9 @@ export async function webRoutes(app: FastifyInstance, root: string, frameAncesto
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
     reply.header("Content-Security-Policy", csp);
     if (!frameAncestors.length) reply.header("X-Frame-Options", "SAMEORIGIN");
+    // files may be sent brotli/gzip-encoded: caches must keep one copy per Accept-Encoding
+    const vary = String(reply.getHeader("vary") ?? "");
+    if (!/accept-encoding/i.test(vary)) reply.header("Vary", vary ? `${vary}, Accept-Encoding` : "Accept-Encoding");
     return payload;
   });
 
@@ -33,6 +36,7 @@ export async function webRoutes(app: FastifyInstance, root: string, frameAncesto
     wildcard: true,
     index: "index.html",
     cacheControl: false,   // the plugin's default (max-age=0) would overwrite the headers below
+    preCompressed: true,   // send the .br/.gz copies the frontend build writes next to each file
     setHeaders(res, path) {
       // hashed build assets never change; everything else (index.html, theme-init.js) is revalidated
       res.setHeader("Cache-Control", /[\\/]assets[\\/]/.test(path) ? "public, max-age=31536000, immutable" : "no-cache");

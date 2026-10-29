@@ -16,6 +16,7 @@ only fetches the windows (and overview levels) covering the requested bbox.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import date
@@ -51,13 +52,23 @@ def _install_log_redaction() -> None:
 
 _install_log_redaction()
 
+# Cloud-optimised GeoTIFF reads over HTTP: don't list the remote "directory" before every open, merge adjacent byte
+# ranges, reuse connections (HTTP/2) and cache blocks. Measured on a Barpeta tile: a 12-pass read went from ~12 s to
+# ~3-5 s. Values already set in the environment win.
+for _k, _v in {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.TIF,.tiff",
+               "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES", "GDAL_HTTP_MULTIPLEX": "YES", "GDAL_HTTP_VERSION": "2",
+               "VSI_CACHE": "TRUE"}.items():
+    os.environ.setdefault(_k, _v)
+# passes of one load are read in parallel (odc-stac reads them one after another by default)
+LOAD_THREADS = max(1, int(os.getenv("AEQE_LOAD_THREADS", "8")))
+
 
 class PlanetarySource(Source):
     id = "planetary_computer"
     name = "Microsoft Planetary Computer"
     homepage = "https://planetarycomputer.microsoft.com/"
     requires = ()
-    concurrency = 8
+    concurrency = max(8, int(os.getenv("AEQE_WORKERS", "8")))   # one slot per oracle worker
     capabilities = [
         Capability("sentinel-1-rtc", "imagery", "Sentinel-1 RTC VV/VH backscatter, terrain corrected", "2014–present, 6–12 day revisit",
                    10, "typically hours to a few days after acquisition", "C-band SAR; sees through cloud; flood signal is low VV"),
@@ -137,7 +148,8 @@ class PlanetarySource(Source):
             try:
                 with self._sem:
                     ds = odc.stac.load(items, bands=bands, bbox=[float(v) for v in bbox], crs="EPSG:4326",
-                                       resolution=resolution_deg, groupby=groupby, chunks=None, fail_on_error=strict)
+                                       resolution=resolution_deg, groupby=groupby, chunks=None, fail_on_error=strict,
+                                       pool=min(LOAD_THREADS, len(items)) if len(items) > 1 else None)
                 return ds
             except Exception as e:  # noqa: BLE001
                 last = e

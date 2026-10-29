@@ -180,3 +180,41 @@ test("single-container mode serves the website with security headers and client-
     await app.close();
   }
 });
+
+
+test("the website is served pre-compressed and large API responses are compressed", async () => {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { brotliCompressSync, brotliDecompressSync } = await import("node:zlib");
+  const web = join(dir, "web-compressed");
+  mkdirSync(join(web, "assets"), { recursive: true });
+  const js = "console.log('bhu-drishti');".repeat(200);
+  writeFileSync(join(web, "index.html"), "<!doctype html><title>Bhu-Drishti</title>");
+  writeFileSync(join(web, "assets", "app.js"), js);
+  writeFileSync(join(web, "assets", "app.js.br"), brotliCompressSync(js));
+  // an engine whose region list is big enough to be worth compressing
+  const f = Fastify();
+  f.get("/health", async () => ({ ok: true }));
+  f.get("/regions", async () => Array.from({ length: 300 }, (_, i) => ({ id: `in-district-${i}`, name: `District ${i}`, state: "State" })));
+  await f.listen({ port: 0, host: "127.0.0.1" });
+  const app = await buildApp(cfg((f.server.address() as any).port, { SQLITE_PATH: ":memory:", STATIC_DIR: web }), { logger: false });
+  try {
+    const asset = await app.inject({ url: "/assets/app.js", headers: { "accept-encoding": "br, gzip" } });
+    assert.equal(asset.statusCode, 200);
+    assert.equal(asset.headers["content-encoding"], "br");
+    assert.equal(brotliDecompressSync(asset.rawPayload).toString(), js);
+    assert.match(String(asset.headers.vary), /accept-encoding/i, "caches must keep compressed and plain copies apart");
+    const plain = await app.inject({ url: "/assets/app.js" });   // a client without compression still works
+    assert.equal(plain.headers["content-encoding"], undefined);
+    assert.equal(plain.body, js);
+
+    const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "zip@example.org", password: "first-pass-123" } });
+    const H = { authorization: `Bearer ${reg.json().token}`, "accept-encoding": "gzip" };
+    const regions = await app.inject({ url: "/api/regions", headers: H });
+    assert.equal(regions.statusCode, 200);
+    assert.equal(regions.headers["content-encoding"], "gzip");
+    assert.equal((await app.inject({ url: "/api/health", headers: { "accept-encoding": "gzip" } })).headers["content-encoding"], undefined, "small responses stay uncompressed");
+  } finally {
+    await app.close();
+    await f.close();
+  }
+});
