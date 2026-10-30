@@ -19,6 +19,7 @@ const DashboardPage = lazy(() => import("./pages/DashboardPage").then((m) => ({ 
 const AreasPage = lazy(() => import("./pages/AreasPage").then((m) => ({ default: m.AreasPage })));
 const MonitorsPage = lazy(() => import("./pages/MonitorsPage").then((m) => ({ default: m.MonitorsPage })));
 const AlertsPage = lazy(() => import("./pages/AlertsPage").then((m) => ({ default: m.AlertsPage })));
+const SachetPage = lazy(() => import("./pages/SachetPage").then((m) => ({ default: m.SachetPage })));
 const ReportsPage = lazy(() => import("./pages/ReportsPage").then((m) => ({ default: m.ReportsPage })));
 const ReportDetailPage = lazy(() => import("./pages/ReportsPage").then((m) => ({ default: m.ReportDetailPage })));
 const RecipientsPage = lazy(() => import("./pages/RecipientsPage").then((m) => ({ default: m.RecipientsPage })));
@@ -34,13 +35,14 @@ const pageLoading = <p className="muted page">Loading…</p>;
 const ico = (d: string): ReactNode => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
 );
-const NAV: { to: string; label: string; end?: boolean; icon: ReactNode; group: string }[] = [
+const NAV: { to: string; label: string; end?: boolean; icon: ReactNode; group: string; hideInSidebar?: boolean }[] = [
   { to: "/app/dashboard", label: "Dashboard", icon: ico("M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z"), group: "Overview" },
   { to: "/app", label: "Explore", end: true, icon: ico("M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm3.5-12.5-2 5-5 2 2-5 5-2Z"), group: "Overview" },
   { to: "/app/twins", label: "Digital twins", icon: ico("M12 3 3 8l9 5 9-5-9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"), group: "Overview" },
   { to: "/app/areas", label: "Areas", icon: ico("M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21Zm0-8.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"), group: "Monitoring" },
   { to: "/app/monitors", label: "Monitors", icon: ico("M3 12h4l3-8 4 16 3-8h4"), group: "Monitoring" },
-  { to: "/app/alerts", label: "Alerts", icon: ico("M12 3 2 20h20L12 3Zm0 6v5m0 3v.5"), group: "Monitoring" },
+  { to: "/app/alerts", label: "Alerts", icon: ico("M12 3 2 20h20L12 3Zm0 6v5m0 3v.5"), group: "Monitoring", hideInSidebar: true },
+  { to: "/app/sachet", label: "SACHET alerts", icon: ico("M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6l-8-3Zm0 5v5m0 3v.5"), group: "Monitoring" },
   { to: "/app/reports", label: "Reports", icon: ico("M6 3h9l4 4v14H6V3Zm8 0v5h5M9 13h6M9 17h6"), group: "Delivery" },
   { to: "/app/recipients", label: "Recipients", icon: ico("M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1m13-9a3 3 0 1 0 0-6M21 19v-1a4 4 0 0 0-3-3.9M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"), group: "Delivery" },
   { to: "/app/history", label: "History", icon: ico("M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2"), group: "Data" },
@@ -79,6 +81,7 @@ export function AppShell() {
           <Route path="areas" element={<AreasPage />} />
           <Route path="monitors" element={<MonitorsPage />} />
           <Route path="alerts" element={<AlertsPage />} />
+          <Route path="sachet" element={<SachetPage />} />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="reports/:id" element={<ReportDetailPage />} />
           <Route path="recipients" element={<RecipientsPage />} />
@@ -133,7 +136,7 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
           {groups.map((g) => (
             <div key={g} className="side-nav">
               <span className="side-label">{g}</span>
-              {NAV.filter((n) => n.group === g).map((n) => (
+              {NAV.filter((n) => n.group === g && !n.hideInSidebar).map((n) => (
                 <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `side-link ${isActive ? "active" : ""}`}>{n.icon}{n.label}</NavLink>
               ))}
             </div>
