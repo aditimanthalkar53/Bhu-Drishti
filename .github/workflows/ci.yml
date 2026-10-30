@@ -1,8 +1,8 @@
 name: CI
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   engine:
@@ -36,9 +36,22 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-  docker:
+  deploy-smoke:
+    # Builds the single image and starts it with NO configuration, exactly like a fresh deploy, then checks it.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker compose config -q
-      - run: docker compose build web backend
+      - run: docker compose up -d --build --wait --wait-timeout 300 app
+      - name: End-to-end through the website
+        run: |
+          curl -fsS http://localhost:8080/ | grep -q "<title>"
+          curl -fsS http://localhost:8080/app/dashboard | grep -q "<title>"
+          curl -fsS http://localhost:8080/api/health | grep -q '"engine":{"ok":true'
+          curl -fsSI http://localhost:8080/ | grep -qi "content-security-policy"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/projects)" = "401"
+          TOKEN=$(curl -fsS -X POST http://localhost:8080/api/auth/register -H 'content-type: application/json' -d '{"email":"ci@example.org","password":"ci-password-123","name":"CI"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+          curl -fsS http://localhost:8080/api/projects -H "authorization: Bearer $TOKEN" | grep -q "My first project"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 100

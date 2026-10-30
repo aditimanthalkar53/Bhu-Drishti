@@ -149,7 +149,13 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
       return { session: current, engine: summary };
     } catch (e) {
       if (e instanceof EngineError && e.status === 404) {
-        // engine restarted: the job is gone but the session record remains
+        // engine restarted: the job is gone but the session record remains. A run that was still going
+        // can never finish now, so close it instead of leaving it "running" forever.
+        if (s.status === "running" || s.status === "queued") {
+          const patch = { status: "failed" as const, answer: "This analysis was interrupted because the analysis engine restarted. Please run the question again." };
+          await store.updateSession(s.id, patch);
+          return { session: { ...s, ...patch }, engine: null };
+        }
         return { session: s, engine: null };
       }
       return sendEngineError(reply, e);
@@ -179,6 +185,7 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
       "access-control-allow-origin": req.headers.origin ?? "*",
     });
     let buf = "";
+    let saved: Record<string, any> | null = null;   // the persisted result, so late evidence can be added to it
     const stream = Readable.fromWeb(upstream.body as any);
     stream.on("data", (chunk: Buffer) => {
       reply.raw.write(chunk);
@@ -193,8 +200,18 @@ export function appRoutes(app: FastifyInstance, store: Store, engine: EngineClie
           if (line) {
             try {
               const r = JSON.parse(line.slice(6));
+              saved = snapshot(r);
               void store.updateSession(s.id, { status: r.stop_reason === "user_stop" ? "stopped" : "done", answer: r.answer, estimate: r.estimate,
-                result: snapshot(r) });
+                result: saved });
+            } catch { /* ignore malformed */ }
+          }
+        } else if (block.includes("event: evidence") && saved) {
+          // supporting evidence that arrived after the answer: add it to the stored result
+          const line = block.split("\n").find((l) => l.startsWith("data: "));
+          if (line) {
+            try {
+              saved = { ...saved, supporting_evidence: JSON.parse(line.slice(6)).items ?? [] };
+              void store.updateSession(s.id, { result: saved });
             } catch { /* ignore malformed */ }
           }
         } else if (block.includes("event: error")) {

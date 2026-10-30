@@ -56,12 +56,16 @@ class EngineConfig:
     batch_size: int = 24
     workers: int = 8
     min_n_to_stop: int = 60
-    stable_batches_to_stop: int = 2   # precision must hold for this many consecutive batches
+    # "fixed" intervals: precision must hold for this many consecutive batches. With "spending" (the default) the
+    # interval is valid at any look, so the run stops at the first look that meets the precision.
+    stable_batches_to_stop: int = 2
     max_inspect_tiles: int = 80
     # "spending": anytime-valid intervals under repeated looks (default);
     # "fixed": nominal fixed-sample interval at every look (faster, validated only by simulation)
     sequential: str = "spending"
-    evidence_wait_s: float = 20.0   # slow context sources are appended to the finished result when they arrive
+    # how long a finished run waits for supporting evidence (rainfall, MODIS, forecasts) before answering;
+    # evidence that arrives later is added to the result and streamed to the page
+    evidence_wait_s: float = 5.0
 
 
 @dataclass
@@ -482,7 +486,8 @@ class Engine:
                 "tiles": [{k: t[k] for k in ("tile_id", "stratum", "value", "cache")} for t in batch_tiles],
                 "estimate": display, "elapsed_s": round(elapsed, 3),
             })
-            if job.replay_n is None and consecutive_ok >= cfg.stable_batches_to_stop:
+            needed = 1 if cfg.sequential == "spending" else cfg.stable_batches_to_stop
+            if job.replay_n is None and consecutive_ok >= needed:
                 stop_reason = "precision_met"
                 break
 
@@ -605,6 +610,7 @@ class Engine:
         if job.result is not None and job.status in ("done", "stopped"):
             job.result["supporting_evidence"] = ev   # arrived after the result: keep trace and summary current
             self._save_trace(job)
+            self._archive(job)
 
     # ------------------------------------------------------------------ census (complete catalogues)
     def _run_census(self, job: Job, u: TileUniverse, oracle: Oracle, scene_key: str, sensor: str, units: dict,

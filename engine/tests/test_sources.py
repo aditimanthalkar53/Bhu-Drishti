@@ -432,3 +432,51 @@ def test_every_module_compiles():
     from pathlib import Path
     for f in Path(__file__).resolve().parents[1].joinpath("aeqe").rglob("*.py"):
         py_compile.compile(str(f), doraise=True)
+
+
+def test_spending_runs_stop_at_the_first_look_that_meets_the_precision(tmp_path):
+    """Anytime-valid intervals hold at every look, so no extra 'confirmation' batch is spent."""
+    import time as _t
+    from aeqe.compiler import compile_question
+    from aeqe.providers.simulated import SimulatedProvider
+
+    eng = Engine(SimulatedProvider(oracle_latency_s=0.0), ResultCache(), tmp_path, EngineConfig(workers=4))
+    assert eng.config.sequential == "spending"
+    job = eng.submit(compile_question("What percentage of cropland was flooded during 1-15 July 2023?",
+                                      region_id="lower-brahmaputra-a"))
+    t0 = _t.time()
+    while job.status in ("queued", "running"):
+        assert _t.time() - t0 < 120
+        _t.sleep(0.02)
+    assert job.result["stop_reason"] == "precision_met"
+    batches = job.trace["batches"]
+    precision = job.ir.precision
+    met = [b["estimate"]["halfwidth"] <= precision and b["estimate"]["interval_method"].startswith("anytime") for b in batches]
+    assert met[-1] and not any(met[:-1]), "stopped later than the first qualifying look"
+
+
+def test_dry_season_reference_is_computed_once_and_reused(tmp_path):
+    """The reference composite does not depend on the question's dates: read it once, then from disk."""
+    import numpy as np
+    import xarray as xr
+    from aeqe.providers.live import LiveProvider
+
+    calls = []
+
+    class FakePC:
+        def load(self, items, bands, bbox, res):
+            calls.append([i.id for i in items])
+            return {"vv": xr.DataArray(np.full((len(items), 4, 4), 0.01), dims=("time", "y", "x"))}
+
+    class Item:
+        def __init__(self, i):
+            self.id = i
+
+    p = LiveProvider(tmp_path)
+    p.pc = FakePC()
+    bbox = (91.0, 26.4, 91.01, 26.41)
+    a = p.reference_db([Item("s1a"), Item("s1b")], bbox, 0.0001)
+    b = p.reference_db([Item("s1b"), Item("s1a")], bbox, 0.0001)   # same passes, other order → cached
+    assert len(calls) == 1 and np.allclose(a, b) and np.allclose(a, -20.0)
+    p.reference_db([Item("s1a"), Item("s1b"), Item("s1c")], bbox, 0.0001)   # a new pass → recomputed
+    assert len(calls) == 2

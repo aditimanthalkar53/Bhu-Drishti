@@ -1,0 +1,25 @@
+# keep secrets, local data and anything not needed to build out of the image
+.git
+.github
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.tsbuildinfo
+backend/data
+backend/test
+engine/data
+engine/credentials
+engine/tests
+engine/bench
+engine/scripts
+docs
+local
+backups
+*.pdf
+*.sqlite*
+docker-compose*.yml

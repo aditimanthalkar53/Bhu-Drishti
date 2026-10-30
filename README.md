@@ -56,10 +56,13 @@ webhooks, email) · Usage · Audit log. A notification bell and a first-run setu
 
 ## Architecture
 
+Everything runs in **one container** (`Dockerfile` at the repo root): the API serves the built website and talks to
+the engine inside the same container.
+
 ```
 React + TypeScript web app        dashboard · explore · areas · monitors · alerts · reports · recipients · data …
         │  /api (REST + Server-Sent Events)
-Node.js + Fastify API             auth (JWT, guest, API keys) · records · monitor scheduler · PDF reports ·
+Node.js + Fastify API             serves the website · auth (JWT, API keys) · records · monitor scheduler · PDF reports ·
         │                         SMTP delivery or signed webhooks → n8n · audit log · notifications
         │  HTTP
 Python + FastAPI AEQE engine      compiler → validation → tiles + proxies → stratified sample → oracles →
@@ -68,7 +71,7 @@ Unified data-access layer         capability registry, retries/backoff, secret r
   Planetary Computer (STAC + COG)    Copernicus Data Space (Catalog, Process, Statistical; OAuth)
   NASA FIRMS (area API)              NASA Earthdata (CMR, IMERG via OPeNDAP, MODIS NRT flood)
   Google Earth Engine (AlphaEarth)   Open-Meteo (forecast + GloFAS)
-Storage: PostgreSQL/PostGIS (users, sessions + result snapshots, records) · SQLite (oracle + source caches) · JSON traces
+Storage: SQLite file or Postgres via DATABASE_URL (users, sessions + result snapshots, records) · SQLite (oracle + source caches) · JSON traces
 ```
 
 ```
@@ -87,16 +90,18 @@ docs/PROVIDERS.md         provider status report (what is verified, what is bloc
 ## Run it
 
 ```bash
-cp .env.example .env          # fill in the keys you have — every source is optional
-docker compose up --build     # web http://localhost:8080 · API :4000 · engine :8000
+cp .env.example .env          # optional: fill in the keys you have — the app starts without any
+docker compose up -d --build  # one container: website + API + engine → http://localhost:8080
 docker compose --profile n8n up -d n8n    # optional: self-hosted n8n on :5678
 ```
+
+Free hosting with automatic deploys from `main` (Hugging Face Spaces + Neon Postgres): see [DEPLOY.md](DEPLOY.md).
 
 Local development (Python 3.11+, Node 20+):
 
 ```bash
 cd engine && pip install -r requirements-real.txt -r requirements-dev.txt && uvicorn aeqe.server:app --port 8000 --env-file ../.env
-cd backend && npm install && npm run dev        # :4000, in-memory store unless DATABASE_URL is set
+cd backend && npm install && npm run dev        # :4000, SQLite in backend/data unless DATABASE_URL is set
 cd frontend && npm install && npm run dev       # :5173
 cd backend && npm run test:email                # optional: check SMTP by mailing SMTP_USER
 ```
@@ -125,7 +130,7 @@ git-ignored.
 
 ```bash
 cd engine && pytest                         # 65 offline tests: estimators, compiler, adapters (mocked HTTP), masks, census, advisory, job persistence
-cd backend && npm test                      # 18 tests: SQLite accounts, no guests, password change / reset / sign-out everywhere, ownership, monitors → alerts → approval → signed webhooks → n8n callback, PDFs
+cd backend && npm test                      # 20 tests: SQLite accounts, website serving, no guests, password change / reset / sign-out everywhere, interrupted runs, ownership, monitors → alerts → approval → signed webhooks → n8n callback, PDFs
 cd frontend && npm run build                # type-check + production build
 cd engine && python scripts/smoke_sources.py          # bounded live, read-only check of every provider
 cd engine && python scripts/live_e2e.py flood|fire|fire_find|built|burned   # live end-to-end runs
@@ -188,22 +193,14 @@ every report before an official receives it, and each delivery is logged and aud
 
 ## Production
 
-What the repo already does: only the `web` container is published (engine, backend and n8n listen on 127.0.0.1),
-healthchecks and `restart: unless-stopped` on every service, security headers and a CSP in `frontend/nginx.conf`,
-rate-limited auth, single-use password-reset links, server-side sign-out, per-user limits on parallel analyses,
-finished engine jobs saved to disk (answers, maps and PDFs survive an engine restart), the backend refuses to start
-with a default `JWT_SECRET`, and CI (`.github/workflows/ci.yml`) runs every test suite and the Docker build.
+**Deploying for free, without a server: [DEPLOY.md](DEPLOY.md)** (Hugging Face Spaces for the app, Neon for the
+database, automatic deploys from `main`).
 
-Checklist for a server:
-
-1. A Linux host with normal Docker networking, `git clone`, `cp .env.example .env`.
-2. In `.env`: a long random `JWT_SECRET` (`openssl rand -base64 48`), your own data-provider keys, real SMTP
-   (a transactional email service, not a personal Gmail), `REPORT_AUTO_EMAIL` and `PUBLIC_APP_URL`/`WEB_ORIGIN` set to
-   `https://your-domain`, `WEB_PORT=127.0.0.1:8080`, `TRUST_PROXY=2`.
-3. `docker compose up -d --build`, then HTTPS in front with `deploy/nginx-https.conf.example` and certbot.
-4. Backups: `./scripts/backup.sh` daily from cron (SQLite snapshot + engine jobs/areas, keeps 14), copy `backups/`
-   off the server; `./scripts/restore.sh backups/<timestamp>` restores one.
-5. Check `docker compose ps` (all *healthy*) and Settings → Data sources in the app.
+Built in: login required, rate-limited auth, single-use password-reset links, server-side sign-out, per-user limits
+on parallel analyses, security headers and a Content Security Policy, finished engine jobs saved to disk, a non-root
+container, and a generated login secret when none is set. CI (`.github/workflows/ci.yml`) runs every test suite, then
+builds the container and starts it with no configuration and checks it end to end;
+`.github/workflows/deploy-hf.yml` publishes `main` to the Space after CI passes.
 
 ## How the statistics work
 

@@ -14,19 +14,22 @@ export interface Config {
   publicUrl: string;
   allowPrivateWebhooks: boolean;
   scheduler: boolean;
-  /** Behind nginx: take the client IP from X-Forwarded-For (only safe when the API port is not public). */
-  /** false, or the number of reverse proxies in front of the API (1 = the web container, 2 = plus a TLS proxy). */
+  /** false, or the number of reverse proxies in front of the API (e.g. 1 behind a hosting platform's proxy). */
   trustProxy: boolean | number;
   /** Live satellite runs a single user may have in flight at once. */
   maxConcurrentRuns: number;
+  /** built website to serve from the API (single-container deploy); unset = API only */
+  staticDir: string | null;
+  /** extra sites allowed to embed the app in a frame (e.g. https://huggingface.co) */
+  frameAncestors: string[];
   /** Public address of the website, used in password-reset links. */
   appUrl: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const jwtSecret = env.JWT_SECRET ?? "dev-only-change-me";
-  if (env.NODE_ENV === "production" && (jwtSecret === "dev-only-change-me" || jwtSecret === "change-me-in-production")) {
-    throw new Error("JWT_SECRET must be set to a real secret in production");
+  const jwtSecret = env.JWT_SECRET || "dev-only-change-me";
+  if (env.NODE_ENV === "production" && (jwtSecret === "dev-only-change-me" || jwtSecret === "change-me-in-production" || jwtSecret.length < 32)) {
+    throw new Error("JWT_SECRET must be set to a random secret of at least 32 characters in production (openssl rand -base64 48)");
   }
   const port = Number(env.PORT ?? 4000);
   return {
@@ -46,6 +49,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     scheduler: (env.MONITOR_SCHEDULER ?? "true") === "true",
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     maxConcurrentRuns: Math.max(1, Number(env.MAX_CONCURRENT_RUNS ?? 2)),
+    staticDir: env.STATIC_DIR || null,
+    frameAncestors: (env.FRAME_ANCESTORS ?? "").split(/[\s,]+/).filter(Boolean),
     appUrl: (env.PUBLIC_APP_URL ?? "http://localhost:8081").replace(/\/$/, ""),
   };
 }

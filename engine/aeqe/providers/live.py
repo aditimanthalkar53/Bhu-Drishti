@@ -36,6 +36,7 @@ Brick kilns and point VQA have no open model here and are refused by validation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -241,14 +242,13 @@ class S1FloodChangeOracle(_LiveOracle):
         if not ev:
             return OracleOutput(0.0, {"no_data": True, "reason": "no Sentinel-1 pass covers this tile in the window"})
         pc = self.p.pc
-        # event, reference and DEM reads are independent: fetch them together (WorldCover needs the grid shape, so it follows)
+        # event and DEM reads are independent (the dry-season reference is cached): fetch them together (WorldCover needs the grid shape, so it follows)
         dem_items = self.p.static_items("dem", ir.region_id)
-        e, rr, dem = _par(lambda: pc.load(ev, ["vv"], bbox, ORACLE_RES)["vv"],
-                          (lambda: pc.load(ref, ["vv"], bbox, ORACLE_RES)["vv"]) if ref else (lambda: None),
-                          lambda: pc.dem(bbox, ORACLE_RES, items=dem_items))
+        e, dem = _par(lambda: pc.load(ev, ["vv"], bbox, ORACLE_RES)["vv"],
+                      lambda: pc.dem(bbox, ORACLE_RES, items=dem_items))
         event_db = to_db(e.min("time").values if "time" in e.dims else e.values)
-        if rr is not None:
-            ref_db = to_db(rr.median("time").values if "time" in rr.dims else rr.values)
+        if ref:
+            ref_db = self.p.reference_db(ref, bbox, ORACLE_RES)   # same for every question this season: cached
         else:
             ref_db = np.full_like(event_db, 0.0)   # no reference: treat as dry (documented caveat)
         shape = event_db.shape
@@ -472,7 +472,8 @@ class LiveProvider(Provider):
     # -- item discovery (region-level, cached) -------------------------------------------
     def _window_items(self, which: str, ir: QueryIR) -> list:
         r = self.region(ir.region_id)
-        key = (which, ir.region_id, ir.start, ir.end, ir.baseline_start)
+        # the dry-season reference depends only on the season, so questions with different dates share it
+        key = (which, ir.region_id, dry_reference_window(ir.start)) if which == "s1_ref" else               (which, ir.region_id, ir.start, ir.end, ir.baseline_start)
         with self._lock:
             if key in self._items:
                 return self._items[key]
@@ -498,6 +499,30 @@ class LiveProvider(Provider):
             if len(self._items) > 256:
                 self._items.pop(next(iter(self._items)))
         return items
+
+    def reference_db(self, items: list, bbox, res: float) -> np.ndarray:
+        """Median dry-season Sentinel-1 VV (dB) for ``bbox``. It does not depend on the question's dates, so it is
+        computed once and kept on disk. The key includes the exact passes used, so new imagery is never
+        mixed with a stale composite."""
+        ids = ",".join(sorted(i.id for i in items))
+        key = hashlib.sha1(f"{ids}|{','.join(f'{float(v):.5f}' for v in bbox)}|{res:.7f}".encode()).hexdigest()
+        path = self.data_dir / "refcache" / key[:2] / f"{key}.npy"
+        if path.exists():
+            try:
+                return np.load(path).astype(float)
+            except (OSError, ValueError):
+                pass   # unreadable cache entry: recompute below
+        rr = self.pc.load(items, ["vv"], bbox, res)["vv"]
+        ref_db = to_db(rr.median("time").values if "time" in rr.dims else rr.values)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+            with open(tmp, "wb") as f:
+                np.save(f, ref_db.astype(np.float32))
+            tmp.replace(path)
+        except OSError:
+            pass   # a full or read-only disk only costs speed
+        return ref_db
 
     def items_for_tile(self, which: str, ir: QueryIR, bbox) -> list:
         items = self._window_items(which, ir)
@@ -673,18 +698,15 @@ class LiveProvider(Provider):
             res_o = max(0.002, td / 5)
             ev, ref = _par(lambda: self._window_items("s1_event", ir), lambda: self._window_items("s1_ref", ir))
             report_status(f"Reading a coarse radar overview of {r.name} from {len(ev)} Sentinel-1 pass(es)…")
-            # the dry-season reference does not depend on the event overview: read both at the same time
-            ref_fut = _IO_POOL.submit(lambda: self.pc.load(ref, ["vv"], r.bbox, res_o)["vv"]) if ref else None
             e = self.pc.load(ev, ["vv"], r.bbox, res_o)["vv"]
             event_db = to_db(e.min("time").values if "time" in e.dims else e.values)
             xs, ys = grid_coords(r.bbox, event_db.shape)
             X, Y = np.meshgrid(xs, ys)
             inside = self.contains(ir.region_id, X, Y)
             thr, thr_method = regional_threshold(event_db[inside & np.isfinite(event_db)])
-            if ref_fut is not None:
+            if ref:
                 report_status(f"Reading the dry-season reference ({len(ref)} radar passes) to tell floods from normal water…")
-                rr = ref_fut.result()
-                ref_db = _fit(to_db(rr.median("time").values if "time" in rr.dims else rr.values), event_db.shape)
+                ref_db = _fit(self.reference_db(ref, r.bbox, res_o), event_db.shape)
             else:
                 ref_db = np.zeros_like(event_db)
             wet_now = (event_db < thr).astype(float)

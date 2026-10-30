@@ -1,104 +1,22 @@
-# Bhu-Drishti — full stack.  docker compose up --build  →  http://localhost:8080 (n8n on :5678)
-# Only the web container is published to the network. engine/backend/n8n listen on 127.0.0.1 of the host
-# (for debugging); in production put HTTPS in front of web (see deploy/nginx-https.conf.example).
+# Bhu-Drishti in one container (website + API + AEQE engine), built from ./Dockerfile.
+#   docker compose up -d --build   →   http://localhost:8080
+# Settings come from .env (copy .env.example); everything is optional, the app starts without it.
 services:
-  db:
-    image: postgis/postgis:16-3.4
+  app:
+    build: .
+    env_file:
+      - path: .env
+        required: false
     environment:
-      POSTGRES_USER: bhudrishti
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bhudrishti}
-      POSTGRES_DB: bhudrishti
-    volumes: [pg-data:/var/lib/postgresql/data]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bhudrishti"]
-      interval: 5s
-      retries: 10
-
-  engine:
-    build:
-      context: ./engine
-      args:
-        WITH_REAL_DATA: ${WITH_REAL_DATA:-true}
-    environment:
-      AEQE_PROVIDER: ${AEQE_PROVIDER:-auto}
-      AEQE_SIM_LATENCY: ${AEQE_SIM_LATENCY:-0.12}
-      AEQE_SEQUENTIAL: ${AEQE_SEQUENTIAL:-spending}
-      AEQE_CORS: http://backend:4000
-      GDAL_HTTP_MAX_RETRY: ${GDAL_HTTP_MAX_RETRY:-4}
-      GDAL_HTTP_RETRY_DELAY: ${GDAL_HTTP_RETRY_DELAY:-2}
-      GDAL_HTTP_RETRY_CODES: ${GDAL_HTTP_RETRY_CODES:-429,500,502,503,504}
-      GDAL_HTTP_TIMEOUT: ${GDAL_HTTP_TIMEOUT:-60}
-      AEQE_LLM: ${AEQE_LLM:-}
-      AEQE_LLM_MODEL: ${AEQE_LLM_MODEL:-}
-      AEQE_LLM_BASE_URL: ${AEQE_LLM_BASE_URL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # live data sources (values come from .env; never logged)
-      CDSE_CLIENT_ID: ${CDSE_CLIENT_ID:-}
-      CDSE_CLIENT_SECRET: ${CDSE_CLIENT_SECRET:-}
-      CDSE_PU_BUDGET: ${CDSE_PU_BUDGET:-3000}
-      NASA_FIRMS_MAP_KEY: ${NASA_FIRMS_MAP_KEY:-}
-      EARTHDATA_TOKEN: ${EARTHDATA_TOKEN:-}
-      EARTHDATA_USERNAME: ${EARTHDATA_USERNAME:-}
-      EARTHDATA_PASSWORD: ${EARTHDATA_PASSWORD:-}
-      GOOGLE_CLOUD_PROJECT_ID: ${GOOGLE_CLOUD_PROJECT_ID:-}
-      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}   # repo-relative path, resolved under /app
+      PORT: "7860"
+    ports: ["${WEB_PORT:-8080}:7860"]
     volumes:
-      - engine-data:/data
-      - ./engine/credentials:/app/engine/credentials:ro
-    ports: ["127.0.0.1:8000:8000"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)"]
-      interval: 30s
-      timeout: 10s
-      start_period: 60s
-      retries: 3
-
-  backend:
-    build: ./backend
-    environment:
-      ENGINE_URL: http://engine:8000
-      # users (login), projects, reports … live in SQLite on the backend-data volume.
-      # Set DATABASE_URL (e.g. postgres://bhudrishti:…@db:5432/bhudrishti) to use the PostGIS service instead.
-      SQLITE_PATH: /data/bhu-drishti.sqlite
-      DATABASE_URL: ${DATABASE_URL:-}
-      ALLOW_GUEST: "false"
-      REPORT_AUTO_EMAIL: ${REPORT_AUTO_EMAIL:-}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      CORS_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
-      NODE_ENV: production
-      TRUST_PROXY: ${TRUST_PROXY:-1}           # proxies in front of the API: 1 = web container, 2 = plus an HTTPS proxy
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:8080}   # used in password-reset links
-      MAX_CONCURRENT_RUNS: ${MAX_CONCURRENT_RUNS:-2}
-      PUBLIC_API_URL: http://backend:4000
-      REPORT_DELIVERY: ${REPORT_DELIVERY:-smtp}
-      ALLOW_PRIVATE_WEBHOOKS: "true"          # n8n runs on the same Docker network
-      MONITOR_SCHEDULER: "true"
-      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
-      SMTP_PORT: ${SMTP_PORT:-465}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-}
-    volumes:
-      - backend-data:/data
-    depends_on:
-      engine: { condition: service_started }
-    ports: ["127.0.0.1:4000:4000"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
-      interval: 30s
-      timeout: 10s
-      start_period: 20s
-      retries: 3
-
-  web:
-    build: ./frontend
-    depends_on: [backend]
-    ports: ["${WEB_PORT:-8080}:80"]
+      - app-data:/home/user/data                                   # SQLite accounts/reports + engine results
+      - ./engine/credentials:/home/user/app/engine/credentials:ro  # optional Earth Engine service-account JSON
     restart: unless-stopped
 
-  # Self-hosted automation for report e-mails (import n8n/bhu-drishti-reports.json)
+  # Optional: self-hosted automation for report e-mails (import n8n/bhu-drishti-reports.json).
+  #   docker compose --profile n8n up -d n8n   →   http://localhost:5678 (and set ALLOW_PRIVATE_WEBHOOKS=true)
   n8n:
     image: n8nio/n8n:1.80.3
     environment:
@@ -120,7 +38,5 @@ services:
     profiles: ["n8n"]
 
 volumes:
-  backend-data:
-  pg-data:
-  engine-data:
+  app-data:
   n8n-data:

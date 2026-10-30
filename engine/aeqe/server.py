@@ -317,6 +317,7 @@ async def events(job_id: str, request: Request, since: int = 0):
 
     async def gen():
         cursor = since
+        finished_at = 0.0
         yield "retry: 2000\n\n"
         while True:
             if await request.is_disconnected():
@@ -326,8 +327,12 @@ async def events(job_id: str, request: Request, since: int = 0):
                 cursor = ev["seq"] + 1
                 yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {json.dumps(ev, default=str)}\n\n"
             if job.status not in ("queued", "running") and cursor >= len(job.events):
-                yield "event: end\ndata: {}\n\n"
-                break
+                # the answer is sent as soon as it is ready; keep the stream open (bounded) for supporting
+                # evidence that is still being fetched, so the page and the saved result receive it
+                finished_at = finished_at or time.monotonic()
+                if job.evidence is not None or job.replay_of or time.monotonic() - finished_at > 120:
+                    yield "event: end\ndata: {}\n\n"
+                    break
             if not new:
                 yield ": keep-alive\n\n"
 

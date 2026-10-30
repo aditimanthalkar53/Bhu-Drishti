@@ -119,3 +119,102 @@ test("password reset is single-use and expires; password change signs out other 
     await engine.close();
   }
 });
+
+test("a run lost to an engine restart is closed as failed, not left running", async () => {
+  const f = Fastify();
+  f.get("/health", async () => ({ ok: true }));
+  f.post("/queries", async (_req, reply) => reply.code(201).send({ id: "lostjob1", compile: {}, plan: { ok: true } }));
+  f.get("/queries/:id", async (_req, reply) => reply.code(404).send({ detail: "no job" }));   // the engine restarted
+  await f.listen({ port: 0, host: "127.0.0.1" });
+  const app = await buildApp(cfg((f.server.address() as any).port, { SQLITE_PATH: ":memory:" }), { logger: false });
+  try {
+    const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "lost@example.org", password: "first-pass-123" } });
+    const H = { authorization: `Bearer ${reg.json().token}` };
+    const [p] = (await app.inject({ url: "/api/projects", headers: H })).json();
+    const started = await app.inject({ method: "POST", url: `/api/projects/${p.id}/queries`, headers: H, payload: { question: "flooded cropland?", region_id: "x" } });
+    assert.equal(started.statusCode, 201);
+    const got = (await app.inject({ url: "/api/queries/lostjob1", headers: H })).json();
+    assert.equal(got.session.status, "failed");
+    assert.match(got.session.answer, /interrupted/);
+  } finally {
+    await app.close();
+    await f.close();
+  }
+});
+
+
+test("single-container mode serves the website with security headers and client-side routes", async () => {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const web = join(dir, "web");
+  mkdirSync(join(web, "assets"), { recursive: true });
+  writeFileSync(join(web, "index.html"), "<!doctype html><title>Bhu-Drishti</title>");
+  writeFileSync(join(web, "assets", "app-123.js"), "console.log(1)");
+  const engine = await fakeEngine();
+  const port = (engine.server.address() as any).port;
+  after(() => engine.close());
+  let app = await buildApp(cfg(port, { SQLITE_PATH: ":memory:", STATIC_DIR: web }), { logger: false });
+  try {
+    const home = await app.inject({ url: "/" });
+    assert.equal(home.statusCode, 200);
+    assert.match(home.body, /Bhu-Drishti/);
+    assert.match(String(home.headers["content-security-policy"]), /frame-ancestors 'self'$/);
+    assert.equal(home.headers["x-frame-options"], "SAMEORIGIN");
+    const route = await app.inject({ url: "/app/dashboard" });   // client-side route → index.html
+    assert.equal(route.statusCode, 200);
+    assert.match(route.body, /Bhu-Drishti/);
+    assert.match(String((await app.inject({ url: "/assets/app-123.js" })).headers["cache-control"]), /immutable/);
+    const missingApi = await app.inject({ url: "/api/nope" });
+    assert.equal(missingApi.statusCode, 404);
+    assert.equal(missingApi.json().error, "not found");
+    assert.equal((await app.inject({ url: "/api/health" })).statusCode, 200);
+    assert.equal((await app.inject({ url: "/api/projects" })).statusCode, 401);
+  } finally {
+    await app.close();
+  }
+  app = await buildApp(cfg(port, { SQLITE_PATH: ":memory:", STATIC_DIR: web, FRAME_ANCESTORS: "https://huggingface.co" }), { logger: false });
+  try {
+    const home = await app.inject({ url: "/" });
+    assert.match(String(home.headers["content-security-policy"]), /frame-ancestors 'self' https:\/\/huggingface\.co/);
+    assert.equal(home.headers["x-frame-options"], undefined);
+  } finally {
+    await app.close();
+  }
+});
+
+
+test("the website is served pre-compressed and large API responses are compressed", async () => {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { brotliCompressSync, brotliDecompressSync } = await import("node:zlib");
+  const web = join(dir, "web-compressed");
+  mkdirSync(join(web, "assets"), { recursive: true });
+  const js = "console.log('bhu-drishti');".repeat(200);
+  writeFileSync(join(web, "index.html"), "<!doctype html><title>Bhu-Drishti</title>");
+  writeFileSync(join(web, "assets", "app.js"), js);
+  writeFileSync(join(web, "assets", "app.js.br"), brotliCompressSync(js));
+  // an engine whose region list is big enough to be worth compressing
+  const f = Fastify();
+  f.get("/health", async () => ({ ok: true }));
+  f.get("/regions", async () => Array.from({ length: 300 }, (_, i) => ({ id: `in-district-${i}`, name: `District ${i}`, state: "State" })));
+  await f.listen({ port: 0, host: "127.0.0.1" });
+  const app = await buildApp(cfg((f.server.address() as any).port, { SQLITE_PATH: ":memory:", STATIC_DIR: web }), { logger: false });
+  try {
+    const asset = await app.inject({ url: "/assets/app.js", headers: { "accept-encoding": "br, gzip" } });
+    assert.equal(asset.statusCode, 200);
+    assert.equal(asset.headers["content-encoding"], "br");
+    assert.equal(brotliDecompressSync(asset.rawPayload).toString(), js);
+    assert.match(String(asset.headers.vary), /accept-encoding/i, "caches must keep compressed and plain copies apart");
+    const plain = await app.inject({ url: "/assets/app.js" });   // a client without compression still works
+    assert.equal(plain.headers["content-encoding"], undefined);
+    assert.equal(plain.body, js);
+
+    const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "zip@example.org", password: "first-pass-123" } });
+    const H = { authorization: `Bearer ${reg.json().token}`, "accept-encoding": "gzip" };
+    const regions = await app.inject({ url: "/api/regions", headers: H });
+    assert.equal(regions.statusCode, 200);
+    assert.equal(regions.headers["content-encoding"], "gzip");
+    assert.equal((await app.inject({ url: "/api/health", headers: { "accept-encoding": "gzip" } })).headers["content-encoding"], undefined, "small responses stay uncompressed");
+  } finally {
+    await app.close();
+    await f.close();
+  }
+});

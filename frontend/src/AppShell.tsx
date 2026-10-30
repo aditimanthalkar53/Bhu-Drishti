@@ -4,27 +4,32 @@ import { api, post } from "./api";
 import { useAuth } from "./auth";
 import { AuthModal } from "./components/AuthModal";
 import { ago } from "./format";
-import { AlertsPage } from "./pages/AlertsPage";
-import { AreasPage } from "./pages/AreasPage";
-import { AuditPage } from "./pages/AuditPage";
-import { DashboardPage } from "./pages/DashboardPage";
-import { DataCatalogPage } from "./pages/DataCatalogPage";
-import { DetectionsPage } from "./pages/DetectionsPage";
-import { HistoryPage } from "./pages/HistoryPage";
-import { LandingPage } from "./pages/LandingPage";
-import { MonitorsPage } from "./pages/MonitorsPage";
-import { RecipientsPage } from "./pages/RecipientsPage";
-import { ReportDetailPage, ReportsPage } from "./pages/ReportsPage";
-import { ResetPasswordPage } from "./pages/ResetPasswordPage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { TwinsPage } from "./pages/TwinsPage";
-import { UsagePage } from "./pages/UsagePage";
 import type { Notification, Region } from "./types";
-import App from "./App";
 import { gsap, pageEnter, useGsap } from "./motion";
 import { ThemeToggle } from "./theme";
 
 const AmbientField = lazy(() => import("./components/three/AmbientField"));
+
+// Every page is its own script, fetched when first opened: the landing page doesn't download the
+// map app (Leaflet) and the app doesn't download the landing page's animations.
+const LandingPage = lazy(() => import("./pages/LandingPage").then((m) => ({ default: m.LandingPage })));
+const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage").then((m) => ({ default: m.ResetPasswordPage })));
+const App = lazy(() => import("./App"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage").then((m) => ({ default: m.DashboardPage })));
+const AreasPage = lazy(() => import("./pages/AreasPage").then((m) => ({ default: m.AreasPage })));
+const MonitorsPage = lazy(() => import("./pages/MonitorsPage").then((m) => ({ default: m.MonitorsPage })));
+const AlertsPage = lazy(() => import("./pages/AlertsPage").then((m) => ({ default: m.AlertsPage })));
+const ReportsPage = lazy(() => import("./pages/ReportsPage").then((m) => ({ default: m.ReportsPage })));
+const ReportDetailPage = lazy(() => import("./pages/ReportsPage").then((m) => ({ default: m.ReportDetailPage })));
+const RecipientsPage = lazy(() => import("./pages/RecipientsPage").then((m) => ({ default: m.RecipientsPage })));
+const HistoryPage = lazy(() => import("./pages/HistoryPage").then((m) => ({ default: m.HistoryPage })));
+const DataCatalogPage = lazy(() => import("./pages/DataCatalogPage").then((m) => ({ default: m.DataCatalogPage })));
+const SettingsPage = lazy(() => import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
+const UsagePage = lazy(() => import("./pages/UsagePage").then((m) => ({ default: m.UsagePage })));
+const AuditPage = lazy(() => import("./pages/AuditPage").then((m) => ({ default: m.AuditPage })));
+const DetectionsPage = lazy(() => import("./pages/DetectionsPage").then((m) => ({ default: m.DetectionsPage })));
+const TwinsPage = lazy(() => import("./pages/TwinsPage").then((m) => ({ default: m.TwinsPage })));
+const pageLoading = <p className="muted page">Loading…</p>;
 
 const ico = (d: string): ReactNode => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
@@ -62,6 +67,7 @@ export function AppShell() {
 
   return (
     <>
+      <Suspense fallback={pageLoading}>
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
@@ -84,6 +90,7 @@ export function AppShell() {
         </Route>
         <Route path="*" element={<main className="boot-error"><h1>Page not found</h1><a className="btn" href="/app/dashboard">Go to the dashboard</a></main>} />
       </Routes>
+      </Suspense>
       {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
     </>
   );
@@ -155,7 +162,7 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
         </div>
       </header>
       <div ref={body} className={full ? "shell-body shell-full" : "shell-body"} key={pathname}>
-        {user ? <Outlet /> : loading ? <p className="muted page">Loading…</p> : <SignInGate />}
+        {user ? <Suspense fallback={pageLoading}><Outlet /></Suspense> : loading ? <p className="muted page">Loading…</p> : <SignInGate />}
       </div>
     </div>
   );

@@ -1,3 +1,5 @@
+import { constants as zlibConstants } from "node:zlib";
+import compress from "@fastify/compress";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import Fastify from "fastify";
@@ -14,6 +16,7 @@ import { PostgresStore } from "./store/postgres.js";
 import { SqliteStore } from "./store/sqlite.js";
 import { setAutoEmail } from "./delivery.js";
 import type { Store } from "./store/types.js";
+import { webRoutes } from "./web.js";
 
 export async function buildApp(config: Config, opts: { store?: Store; logger?: boolean } = {}) {
   const app = Fastify({
@@ -26,6 +29,9 @@ export async function buildApp(config: Config, opts: { store?: Store; logger?: b
   await store.init();
   if (store instanceof SqliteStore) app.addHook("onClose", async () => store.close());
 
+  // API responses (map GeoJSON can be several MB) go out compressed. Brotli at a low quality keeps the CPU cost
+  // small on shared hardware. Live progress streams are hijacked raw responses, so they are never buffered here.
+  await app.register(compress, { threshold: 1024, encodings: ["br", "gzip"], brotliOptions: { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } } });
   await app.register(cors, { origin: config.corsOrigin, credentials: true, methods: ["GET", "POST", "PATCH", "DELETE"] });
   await app.register(jwt, { secret: config.jwtSecret });
   registerAuth(app, store, { allowGuest: config.allowGuest });
@@ -42,6 +48,7 @@ export async function buildApp(config: Config, opts: { store?: Store; logger?: b
     app.addHook("onClose", async () => scheduler.stop());
   }
   app.decorate("scheduler", scheduler);
+  if (config.staticDir) await webRoutes(app, config.staticDir, config.frameAncestors);
 
   app.log.info(`store=${store.constructor.name} engine=${config.engineUrl} scheduler=${config.scheduler} ` +
     `guest=${config.allowGuest} autoEmail=${config.reportAutoEmail.length} address(es)`);
