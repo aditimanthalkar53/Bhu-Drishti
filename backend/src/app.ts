@@ -11,6 +11,7 @@ import { featureRoutes } from "./features.js";
 import { MonitorScheduler } from "./monitors.js";
 import { appRoutes } from "./routes.js";
 import { twinRoutes } from "./twins.js";
+import { SachetService, sachetRoutes } from "./sachet.js";
 import { MemoryStore } from "./store/memory.js";
 import { PostgresStore } from "./store/postgres.js";
 import { SqliteStore } from "./store/sqlite.js";
@@ -18,7 +19,7 @@ import { setAutoEmail } from "./delivery.js";
 import type { Store } from "./store/types.js";
 import { webRoutes } from "./web.js";
 
-export async function buildApp(config: Config, opts: { store?: Store; logger?: boolean } = {}) {
+export async function buildApp(config: Config, opts: { store?: Store; logger?: boolean; sachet?: SachetService } = {}) {
   const app = Fastify({
     trustProxy: config.trustProxy as boolean,   // a hop count is supported at runtime; the type overloads omit it
     bodyLimit: 5 * 1024 * 1024,   // GeoJSON / KML area uploads
@@ -40,6 +41,7 @@ export async function buildApp(config: Config, opts: { store?: Store; logger?: b
   appRoutes(app, store, engine, { maxConcurrentRuns: config.maxConcurrentRuns });
   detectionRoutes(app, store, engine, { maxConcurrentRuns: config.maxConcurrentRuns });
   twinRoutes(app, store, engine);
+  sachetRoutes(app, store, opts.sachet);
   const scheduler = new MonitorScheduler(store, engine, app.log, { publicUrl: config.publicUrl, secret: config.jwtSecret, appUrl: config.appUrl });
   featureRoutes(app, store, engine, scheduler, { publicUrl: config.publicUrl, appUrl: config.appUrl, secret: config.jwtSecret, allowPrivateWebhooks: config.allowPrivateWebhooks });
   setAutoEmail(config.reportAutoEmail);
