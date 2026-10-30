@@ -4,9 +4,11 @@ import Fastify from "fastify";
 import { authRoutes, registerAuth } from "./auth.js";
 import type { Config } from "./config.js";
 import { EngineClient } from "./engine-client.js";
+import { detectionRoutes } from "./detections.js";
 import { featureRoutes } from "./features.js";
 import { MonitorScheduler } from "./monitors.js";
 import { appRoutes } from "./routes.js";
+import { twinRoutes } from "./twins.js";
 import { MemoryStore } from "./store/memory.js";
 import { PostgresStore } from "./store/postgres.js";
 import { SqliteStore } from "./store/sqlite.js";
@@ -30,8 +32,10 @@ export async function buildApp(config: Config, opts: { store?: Store; logger?: b
   authRoutes(app, store, { allowGuest: config.allowGuest, appUrl: config.appUrl });
   const engine = new EngineClient(config.engineUrl);
   appRoutes(app, store, engine, { maxConcurrentRuns: config.maxConcurrentRuns });
-  const scheduler = new MonitorScheduler(store, engine, app.log, { publicUrl: config.publicUrl });
-  featureRoutes(app, store, engine, scheduler, { publicUrl: config.publicUrl, allowPrivateWebhooks: config.allowPrivateWebhooks });
+  detectionRoutes(app, store, engine, { maxConcurrentRuns: config.maxConcurrentRuns });
+  twinRoutes(app, store, engine);
+  const scheduler = new MonitorScheduler(store, engine, app.log, { publicUrl: config.publicUrl, secret: config.jwtSecret, appUrl: config.appUrl });
+  featureRoutes(app, store, engine, scheduler, { publicUrl: config.publicUrl, appUrl: config.appUrl, secret: config.jwtSecret, allowPrivateWebhooks: config.allowPrivateWebhooks });
   setAutoEmail(config.reportAutoEmail);
   if (config.scheduler) {
     scheduler.start();

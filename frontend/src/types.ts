@@ -225,15 +225,18 @@ export interface ReplayReport {
 export interface AOI { id: string; name: string; regionId: string; kind: "district" | "custom" | "demo"; state?: string; description?: string; areaKm2?: number | null; createdAt: string }
 export type Schedule = { type: "interval"; hours: number } | { type: "daily"; time: string } | { type: "new_pass" } | { type: "manual" };
 export interface Threshold { metric: "value" | "lo" | "hi"; op: ">" | ">=" | "<" | "<="; value: number }
+export interface Escalation { enabled: boolean; ackMinutes: number; severeValue?: number | null; criticalValue?: number | null }
+export const LEVELS: Record<number, string> = { 1: "Block / field", 2: "District", 3: "State", 4: "National" };
+export interface Notified { at: string; recipientId: string; name: string; designation: string; level: number; email: string; status: "sent" | "failed"; error?: string; reason: string }
 export interface Monitor {
-  id: string; name: string; aoiId: string; regionId: string; question: string; schedule: Schedule; threshold?: Threshold | null;
+  id: string; escalation?: Escalation | null; name: string; aoiId: string; regionId: string; question: string; schedule: Schedule; threshold?: Threshold | null;
   recipientIds: string[]; groupIds: string[]; autoReport: boolean; requireApproval: boolean; enabled: boolean;
   lastRunAt?: string | null; lastQueryId?: string | null; lastValue?: number | null; lastStatus?: string | null; lastError?: string | null;
   nextRunAt?: string | null; createdAt: string;
 }
-export interface Alert { id: string; monitorId: string; queryId: string; regionId: string; title: string; message: string; value: number | null;
+export interface Alert { drill?: boolean; escalation?: Escalation | null; lastEscalatedAt?: string | null; notified: Notified[]; confirmedBy?: { recipientId: string; name: string; at: string }[]; id: string; monitorId: string; queryId: string; regionId: string; title: string; message: string; value: number | null;
   threshold: Threshold; status: "open" | "acknowledged" | "resolved"; assignee?: string | null; history: { at: string; by: string; action: string; note?: string }[]; createdAt: string }
-export interface Recipient { id: string; name: string; designation: string; department: string; state?: string; district?: string; regionIds: string[];
+export interface Recipient { level?: number; reportsToId?: string | null; id: string; name: string; designation: string; department: string; state?: string; district?: string; regionIds: string[];
   email: string; phone?: string; channels: string[]; groupIds: string[]; active: boolean; createdAt: string }
 export interface Group { id: string; name: string; description?: string; createdAt: string }
 export interface Delivery { id: string; reportId: string; recipientId?: string | null; channel: string; to: string; status: string; via: string; error?: string | null; createdAt: string }

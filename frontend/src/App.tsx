@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "./auth";
 import { api, ApiError, post } from "./api";
+import type { MapOverlay } from "./components/ChangeImages";
 import { MapView } from "./components/MapView";
 import { EXAMPLES, LIVE_EXAMPLES, QueryPanel, type ScopeReply } from "./components/QueryPanel";
 import { ResultPanel } from "./components/ResultPanel";
@@ -31,6 +32,7 @@ export default function App() {
   const [scope, setScope] = useState<ScopeReply | null>(null);
   const [checking, setChecking] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [overlay, setOverlay] = useState<MapOverlay | null>(null);
 
   const { state: run, attach } = useQueryRun();
   // the left panel shows either the question form or the answer; a new or reopened run jumps to the answer
@@ -221,12 +223,12 @@ export default function App() {
       />
         </div>
         <div className="explore-body" id="panel-result" role="tabpanel" aria-labelledby="tab-result" hidden={tab !== "result"}>
-          <ResultPanel key={run.id ?? "idle"} run={run} />
+          <ResultPanel key={run.id ?? "idle"} run={run} simulated={!!region?.simulated} onMapOverlay={setOverlay} />
         </div>
       </section>
       <main className="pane pane-map" aria-label="Map">
         <MapView region={regionWithGeom} universe={run.universe} sampled={run.sampled} confirmedIds={confirmed}
-          task={task} target={target} unit={task ? unitFor(task, target) : ""} runKey={run.id ?? "none"} />
+          task={task} target={target} unit={task ? unitFor(task, target) : ""} runKey={run.id ?? "none"} overlay={overlay} />
         {region && (
           <div className={`map-info ${region.simulated ? "is-sim" : "is-live"}`}>
             <button type="button" className="map-info-btn" aria-describedby="map-info-tip"

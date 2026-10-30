@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { del, patch, post } from "../api";
 import { ago, fmt, fmtDate } from "../format";
-import type { AOI, Group, Monitor, Recipient, Schedule, Threshold } from "../types";
+import type { AOI, Escalation, Group, Monitor, Recipient, Schedule, Threshold } from "../types";
 import { Empty, ErrorNote, Page, Pill, useAction, useData } from "./common";
 
 const QUESTIONS = [
@@ -40,6 +40,7 @@ export function MonitorsPage() {
   const [groupIds, setGroupIds] = useState<string[]>([]);
   const [autoReport, setAutoReport] = useState(false);
   const [requireApproval, setRequireApproval] = useState(true);
+  const [esc, setEsc] = useState<Escalation>({ enabled: false, ackMinutes: 60, severeValue: null, criticalValue: null });
 
   useEffect(() => {
     if (!aoiId && aois.data?.length) setAoiId(aois.data[0].id);
@@ -62,7 +63,8 @@ export function MonitorsPage() {
 
   const create = () => act.run("create", async () => {
     if (!aoiId) throw new Error("Add an area of interest first.");
-    await post("/api/monitors", { name, aoiId, question, schedule, threshold: useThreshold ? threshold : null, recipientIds, groupIds, autoReport, requireApproval });
+    await post("/api/monitors", { name, aoiId, question, schedule, threshold: useThreshold ? threshold : null, recipientIds, groupIds, autoReport, requireApproval,
+      escalation: esc.enabled && useThreshold ? esc : null });
     setName("");
     await monitors.reload();
     return "Monitor created. It checks the question against the area now, and runs on its schedule.";
@@ -134,6 +136,20 @@ export function MonitorsPage() {
                 ))}
               </div>
             </fieldset>
+            <fieldset className="field span-2 fieldset">
+              <legend><label><input type="checkbox" checked={esc.enabled} disabled={!useThreshold} onChange={(e) => setEsc({ ...esc, enabled: e.target.checked })} /> Escalate to higher authorities</label></legend>
+              {esc.enabled && (
+                <div className="form-grid">
+                  <label className="field"><span>If nobody confirms within (minutes)</span>
+                    <input inputMode="numeric" value={String(esc.ackMinutes)} onChange={(e) => setEsc({ ...esc, ackMinutes: Number(e.target.value) || 60 })} /></label>
+                  <label className="field"><span>Also tell one level up at or above <span className="muted">(optional)</span></span>
+                    <input inputMode="decimal" value={esc.severeValue ?? ""} onChange={(e) => setEsc({ ...esc, severeValue: e.target.value === "" ? null : Number(e.target.value) })} /></label>
+                  <label className="field"><span>Also tell two levels up at or above <span className="muted">(optional)</span></span>
+                    <input inputMode="decimal" value={esc.criticalValue ?? ""} onChange={(e) => setEsc({ ...esc, criticalValue: e.target.value === "" ? null : Number(e.target.value) })} /></label>
+                </div>
+              )}
+              <p className="muted small">The people ticked above are told first. Each of them reports to someone on the <Link to="/app/recipients">Recipients</Link> page, and that person is told next. Officials confirm with a link in the email.</p>
+            </fieldset>
             <label className="check"><input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)} /> Reports need human approval before they are sent (recommended)</label>
             <label className="check"><input type="checkbox" checked={autoReport} onChange={(e) => setAutoReport(e.target.checked)} /> Make a report after every run (not only on alerts)</label>
           </div>
@@ -158,7 +174,8 @@ export function MonitorsPage() {
                     <td><strong>{m.name}</strong><div className="muted small">{m.question}</div>
                       {m.lastError && <div className="error-text small">{m.lastError}</div>}</td>
                     <td>{scheduleText(m.schedule)}</td>
-                    <td>{m.threshold ? `${m.threshold.metric === "lo" ? "lower bound" : m.threshold.metric === "hi" ? "upper bound" : "estimate"} ${m.threshold.op} ${m.threshold.value}` : "–"}</td>
+                    <td>{m.threshold ? `${m.threshold.metric === "lo" ? "lower bound" : m.threshold.metric === "hi" ? "upper bound" : "estimate"} ${m.threshold.op} ${m.threshold.value}` : "–"}
+                      {m.escalation?.enabled && <div className="muted small">escalates after {m.escalation.ackMinutes} min{m.escalation.severeValue != null ? `, severe at ${m.escalation.severeValue}` : ""}{m.escalation.criticalValue != null ? `, critical at ${m.escalation.criticalValue}` : ""}</div>}</td>
                     <td>{m.lastStatus ? <Pill tone={m.lastStatus === "triggered" ? "error" : m.lastStatus === "failed" ? "warn" : m.lastStatus === "running" ? "info" : "ok"}>{m.lastStatus}</Pill> : <Pill tone="muted">never</Pill>}
                       <div className="muted small">{ago(m.lastRunAt)}</div>
                       {m.lastQueryId && <Link className="small" to={`/app?open=${m.lastQueryId}`}>open run</Link>}</td>
@@ -170,6 +187,14 @@ export function MonitorsPage() {
                         setTimeout(() => void monitors.reload(), 1500);
                         return "Run started — live runs take a few minutes.";
                       })}>Run now</button>
+                      {m.escalation?.enabled && (
+                        <button className="btn btn-small" title="Rehearse the alert chain without running a satellite analysis" onClick={() => void act.run(`drill-${m.id}`, async () => {
+                          const raw = prompt("Value to rehearse with (compare with the severe and critical levels):", String(m.escalation?.severeValue ?? m.threshold?.value ?? 0));
+                          if (raw === null) return;
+                          await post(`/api/monitors/${m.id}/drill`, { value: Number(raw) });
+                          return "Drill started. See Alerts for who was told.";
+                        })}>Drill</button>
+                      )}
                       <button className="btn btn-small" onClick={() => void act.run(`tog-${m.id}`, async () => {
                         await patch(`/api/monitors/${m.id}`, { enabled: !m.enabled });
                         await monitors.reload();

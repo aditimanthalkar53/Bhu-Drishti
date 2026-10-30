@@ -22,6 +22,11 @@ DELETE /regions/{id}                 remove a custom area of interest
 GET  /regions/{id}/freshness         newest available acquisition per product for the region
 GET  /sources                        status of every external data source (no secrets)
 POST /sources/check                  run bounded live smoke tests (all, or ?source=id)
+GET  /detections/analyses            change-detection methods, their parameters and default dates
+POST /detections                     start a two-date change detection for a district or custom area
+GET  /detections/{id}                progress steps, then the result (areas, polygons, evidence, risk)
+GET  /detections/{id}/overlays/{f}   PNG map overlay (before / after / change)
+DELETE /detections/{id}              remove a finished analysis and its files
 """
 
 from __future__ import annotations
@@ -31,7 +36,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -89,7 +96,7 @@ def _config_report() -> None:
 provider = make_provider()
 cache = ResultCache(os.getenv("AEQE_CACHE_PATH", str(DATA_DIR / "cache.sqlite")))
 engine = Engine(provider, cache, DATA_DIR,
-                EngineConfig(workers=int(os.getenv("AEQE_WORKERS", "8")), batch_size=int(os.getenv("AEQE_BATCH", "24")),
+                EngineConfig(workers=int(os.getenv("AEQE_WORKERS", "12")), batch_size=int(os.getenv("AEQE_BATCH", "24")),
                              sequential=os.getenv("AEQE_SEQUENTIAL", "spending")))
 
 app = FastAPI(title="AEQE — Bhu-Drishti Anytime Earth-observation Query Engine", version=__version__)
@@ -379,6 +386,115 @@ async def exhaustive(job_id: str, simulate_latency: bool = False):
         return await asyncio.to_thread(engine.exhaustive, job, simulate_latency=simulate_latency)
     except ValueError as e:
         raise HTTPException(409, str(e)) from e
+
+
+# ------------------------------------------------------------------ change detection (aeqe.eo)
+_detection_service = None
+_detection_lock = threading.Lock()
+
+
+def _detections():
+    """Imported on first use: the pipeline needs the live-data packages (rasterio), simulated-only installs do not."""
+    global _detection_service
+    live = _live()
+    if live is None:
+        raise HTTPException(409, "change detection needs live data (install requirements-real.txt)")
+    with _detection_lock:
+        if _detection_service is None:
+            from .eo.service import DetectionService
+
+            _detection_service = DetectionService(live, DATA_DIR, workers=int(os.getenv("AEQE_EO_WORKERS", "2")))
+    return _detection_service
+
+
+class DetectionRequest(BaseModel):
+    kind: str
+    region_id: str
+    before: Optional[date] = None
+    after: Optional[date] = None
+
+
+@app.get("/detections/analyses")
+def detection_analyses():
+    return _detections().catalog()
+
+
+@app.post("/detections", status_code=201)
+def start_detection(req: DetectionRequest):
+    try:
+        return _detections().submit(req.kind, req.region_id, req.before, req.after)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@app.get("/detections/{job_id}")
+def get_detection(job_id: str):
+    job = _detections().get(job_id)
+    if job is None:
+        raise HTTPException(404, f"no detection {job_id}")
+    return job
+
+
+@app.get("/detections/{job_id}/overlays/{file}")
+def detection_overlay(job_id: str, file: str):
+    p = _detections().overlay_path(job_id, file)
+    if p is None:
+        raise HTTPException(404, "no such overlay")
+    return FileResponse(p, media_type="image/png")
+
+
+@app.delete("/detections/{job_id}")
+def delete_detection(job_id: str):
+    try:
+        if not _detections().delete(job_id):
+            raise HTTPException(404, f"no detection {job_id}")
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    return {"ok": True}
+
+
+class ObservationRequest(BaseModel):
+    geometry: dict
+    detection_ids: list[str]
+    buffer_m: float = 100.0
+
+
+class TerrainRequest(BaseModel):
+    geometry: dict
+    detection_id: Optional[str] = None
+
+
+@app.get("/twins/osm")
+def twin_osm_assets(lat: float, lon: float, radius_m: float = 500.0):
+    from .eo.twin import find_osm_assets
+
+    _detections()
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180 and 50 <= radius_m <= 2000):
+        raise HTTPException(422, "Pick a point on the map and a radius of 50 to 2000 m.")
+    try:
+        return find_osm_assets(lat, lon, radius_m)
+    except Exception as e:  # noqa: BLE001 — public servers fail often; the person can still draw the asset
+        raise HTTPException(503, f"OpenStreetMap could not be reached ({type(e).__name__}). You can draw the asset instead.") from e
+
+
+@app.post("/twins/observations")
+def twin_observations(req: ObservationRequest):
+    try:
+        return _detections().observations(req.geometry, req.detection_ids, req.buffer_m)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@app.post("/twins/terrain")
+def twin_terrain(req: TerrainRequest):
+    from .eo import EOUnavailable
+
+    try:
+        return _detections().terrain(req.geometry, req.detection_id)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except EOUnavailable as e:
+        raise HTTPException(503, str(e)) from e
 
 
 @app.get("/cache/stats")

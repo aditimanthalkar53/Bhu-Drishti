@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyBaseLogger } from "fastify";
 import { audit, autoDeliver, notify, reportRecipients, sendReport, snapshot } from "./delivery.js";
+import { escalateDue, openChain, type Ctx } from "./escalation.js";
 import type { Alert, Monitor, Report, Threshold } from "./domain.js";
 import { EngineClient, EngineError } from "./engine-client.js";
 import type { Project, QuerySession, Store } from "./store/types.js";
@@ -61,7 +62,25 @@ export class MonitorScheduler {
   private lastPassCheck = new Map<string, number>();
 
   constructor(private store: Store, private engine: EngineClient, private log: FastifyBaseLogger,
-    private opts: { publicUrl: string; tickMs?: number; pollMs?: number; maxConcurrent?: number; passCheckMs?: number } = { publicUrl: "" }) {}
+    private opts: { publicUrl: string; secret?: string; appUrl?: string; tickMs?: number; pollMs?: number; maxConcurrent?: number; passCheckMs?: number } = { publicUrl: "" }) {}
+
+  private ctx(): Ctx {
+    return { store: this.store, secret: this.opts.secret ?? "dev", publicUrl: this.opts.publicUrl, appUrl: this.opts.appUrl ?? "" };
+  }
+
+  /** A rehearsal of the escalation chain: opens a clearly labelled alert without running any satellite analysis. */
+  async drill(m: Monitor, value: number | null, actor: string): Promise<Alert> {
+    const alert: Alert = {
+      id: randomUUID(), ownerId: m.ownerId, createdAt: now(), monitorId: m.id, queryId: "", regionId: m.regionId, drill: true,
+      title: `DRILL — ${m.name}`, message: `This is a rehearsal of the alert chain for "${m.name}". No satellite analysis was run.`, value,
+      threshold: m.threshold ?? { metric: "value", op: ">=", value: value ?? 0 }, status: "open", notified: [],
+      history: [{ at: now(), by: actor, action: "drill started" }],
+    };
+    await this.store.putRecord("alert", alert);
+    await audit(this.store, m.ownerId, actor, "alert.drill", `alert:${alert.id}`, { monitor: m.id, value });
+    await openChain(this.ctx(), alert, m);
+    return alert;
+  }
 
   start() {
     this.timer = setInterval(() => void this.tick().catch((e) => this.log.error({ err: e }, "monitor tick failed")), this.opts.tickMs ?? 60_000);
@@ -73,6 +92,7 @@ export class MonitorScheduler {
   }
 
   async tick(at: Date = new Date()) {
+    await escalateDue(this.ctx(), at).catch((e) => this.log.error({ err: e }, "escalation check failed"));
     const monitors = (await this.store.listRecords<Monitor>("monitor")).filter((m) => m.enabled);
     for (const m of monitors) {
       if (this.running.size >= (this.opts.maxConcurrent ?? 2)) break;
@@ -138,9 +158,10 @@ export class MonitorScheduler {
         const alert: Alert = {
           id: randomUUID(), ownerId: m.ownerId, createdAt: now(), monitorId: m.id, queryId: session.id, regionId: m.regionId,
           title: `${m.name}: threshold crossed`, message: String(result?.answer ?? ""), value, threshold: m.threshold, status: "open",
-          history: [{ at: now(), by: "system", action: "opened" }],
+          history: [{ at: now(), by: "system", action: "opened" }], notified: [],
         };
         await this.store.putRecord("alert", alert);
+        await openChain(this.ctx(), alert, fresh);
         await notify(this.store, m.ownerId, alert.title, alert.message.slice(0, 300), "critical", `/app/alerts`);
         await emit(this.store, m.ownerId, "alert.triggered", { alert_id: alert.id, monitor_id: m.id, name: m.name, region_id: m.regionId,
           value, threshold: m.threshold, answer: alert.message, query_id: session.id });

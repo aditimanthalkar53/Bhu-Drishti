@@ -47,6 +47,13 @@ RELATED: list[tuple[str, str, Optional[str]]] = [
      "What percentage of cropland was flooded in the last 14 days?"),
 ]
 
+# Measured on the Change detection page (two-date maps), not by Explore's sampling engine.
+CHANGE_DETECTION = {
+    "forest / tree cover change": "Forest loss (ForestGuard)",
+    "crop health, drought or yield": "Vegetation change",
+    "water levels, lakes, glaciers or snow": "Surface-water change",
+}
+
 HELP = r"^\s*(hi|hello|hey|namaste|namaskar|good (morning|afternoon|evening)|help|what can you do|who are you|what is this|how (does|do) (this|it) work)\b"
 EO_HINT = r"\b(satellite|sentinel|imagery|image|district|village|area|land|crop|farm|field|map|region|km|hectare|acre)\b"
 
@@ -77,6 +84,10 @@ def classify(question: str) -> Optional[ScopeReply]:
         if re.search(pat, t):
             msg = (f"Bhu-Drishti cannot measure {label} yet. It currently answers questions about "
                    + ", ".join(SUPPORTED) + ".")
+            if label in CHANGE_DETECTION:
+                msg = (f"Questions here cannot measure {label} yet, but the Change detection page can map it: choose "
+                       f"\"{CHANGE_DETECTION[label]}\", a district and two dates. Questions here answer "
+                       + ", ".join(SUPPORTED) + ".")
             if label.startswith("weather"):
                 msg += " (Flood answers already include rainfall and a 7-day rain/river forecast as supporting context.)"
             return ScopeReply("related", msg, topic=label, suggestions=[closest] if closest else EXAMPLES_LIVE[:2])

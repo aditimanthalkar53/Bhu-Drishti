@@ -32,7 +32,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     port,
     host: env.HOST ?? "0.0.0.0",
-    engineUrl: (env.ENGINE_URL ?? "http://localhost:8000").replace(/\/$/, ""),
+    // Render's private-network service reference only yields "host:port", hence the second form
+    engineUrl: (env.ENGINE_URL ?? (env.ENGINE_HOSTPORT ? `http://${env.ENGINE_HOSTPORT}` : "http://localhost:8000")).replace(/\/$/, ""),
     jwtSecret,
     databaseUrl: env.DATABASE_URL || undefined,
     sqlitePath: env.SQLITE_PATH || "./data/bhu-drishti.sqlite",

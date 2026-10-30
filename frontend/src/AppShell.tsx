@@ -9,6 +9,7 @@ import { AreasPage } from "./pages/AreasPage";
 import { AuditPage } from "./pages/AuditPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { DataCatalogPage } from "./pages/DataCatalogPage";
+import { DetectionsPage } from "./pages/DetectionsPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { LandingPage } from "./pages/LandingPage";
 import { MonitorsPage } from "./pages/MonitorsPage";
@@ -16,6 +17,7 @@ import { RecipientsPage } from "./pages/RecipientsPage";
 import { ReportDetailPage, ReportsPage } from "./pages/ReportsPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { TwinsPage } from "./pages/TwinsPage";
 import { UsagePage } from "./pages/UsagePage";
 import type { Notification, Region } from "./types";
 import App from "./App";
@@ -30,6 +32,7 @@ const ico = (d: string): ReactNode => (
 const NAV: { to: string; label: string; end?: boolean; icon: ReactNode; group: string }[] = [
   { to: "/app/dashboard", label: "Dashboard", icon: ico("M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z"), group: "Overview" },
   { to: "/app", label: "Explore", end: true, icon: ico("M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm3.5-12.5-2 5-5 2 2-5 5-2Z"), group: "Overview" },
+  { to: "/app/twins", label: "Digital twins", icon: ico("M12 3 3 8l9 5 9-5-9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"), group: "Overview" },
   { to: "/app/areas", label: "Areas", icon: ico("M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21Zm0-8.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"), group: "Monitoring" },
   { to: "/app/monitors", label: "Monitors", icon: ico("M3 12h4l3-8 4 16 3-8h4"), group: "Monitoring" },
   { to: "/app/alerts", label: "Alerts", icon: ico("M12 3 2 20h20L12 3Zm0 6v5m0 3v.5"), group: "Monitoring" },
@@ -65,6 +68,8 @@ export function AppShell() {
         <Route path="/app" element={layout}>
           <Route index element={<App />} />
           <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="detect" element={<DetectionsPage />} />
+          <Route path="twins" element={<TwinsPage />} />
           <Route path="areas" element={<AreasPage />} />
           <Route path="monitors" element={<MonitorsPage />} />
           <Route path="alerts" element={<AlertsPage />} />

@@ -20,13 +20,36 @@ tight enough — with intervals that stay valid however often the run is checked
 | Context (never mixed into the number) | rainfall totals, MODIS flood share, Copernicus cross-check, 7-day rain and river-discharge forecast | GPM IMERG, MCDWD_L3_NRT, CDSE Statistical API, Open-Meteo/GloFAS |
 | What to do next | recovery / prevention guidance per hazard, season and state | PMFBY, SDRF/NDRF norms, ICAR-CRIDA contingency plans, CRM scheme |
 
+**Change detection** is the second way to analyse an area. Explore estimates *how much* across a district by sampling, with
+a statistical interval. Change detection compares two dates and maps *exactly where*, as polygons, with who and what is
+inside them. It does not sample, so its range is threshold sensitivity, not a confidence interval.
+
+| Analysis | Method | Evidence and exposure |
+|---|---|---|
+| Flood detection (radar) | Sentinel-1 RTC VV/VH change: speckle filter, Otsu threshold when the histogram supports it (else a fixed one, flagged), ≥ 3 dB drop, VH agreement | JRC surface-water and WorldCover permanent-water masks, DEM slope mask, built-up exclusion, people (HRSL/WorldPop), facilities (OSM) |
+| Surface-water change | Sentinel-2 MNDWI with a dark-NIR test, clear pixels only | DEM slope mask, people, facilities |
+| Vegetation change | Sentinel-2 NDVI difference: scene-wide median shift removed, absolute drop and robust z-score both required | Reports vegetation gain too |
+| Forest loss (ForestGuard) | The NDVI rule limited to WorldCover tree cover | Hansen annual loss, NASA FIRMS fires, OSM protected areas, largest patches, evidence-coverage level (a count, not a probability) |
+
+| Ground movement (InSAR) | Sentinel-1 SLC pair on the same track, processed to line-of-sight displacement by NASA ASF HyP3; relative to surrounding ground, beyond 15 mm and 2.5× the measured noise | Coherence mask, elevation-correlation check for atmosphere, people, facilities. No risk rating: a signal is a reason to inspect, not proof of damage |
+
+The first four are transparent baselines ported from Prithvi Drishti and **not validated against labelled data**. Every result
+says so, with its quality flags and the reasons for its confidence class. A risk level (hazard × exposure) is a documented
+convention, not a calibrated model; vulnerability has no data source and is reported as unknown.
+
 Two **simulated demo districts** with known ground truth remain available (clearly labelled) so the statistics can be
 checked against reality; brick-kiln counting and point inspection only work there, because no open model is wired in
 for live data.
 
+**Digital twins** hold one real asset (a bridge, road segment, building, embankment or dam, found in OpenStreetMap or drawn,
+up to about 10 km): its information, the inspections, damage reports, maintenance and sensor readings people record, and every
+finished analysis that covers it, read at the asset's location and compared with the previous one. It is shown on 3D terrain
+(Copernicus DEM with a recent Sentinel-2 image, or the movement field draped on it). This is a record and a viewer: nothing
+simulates how the structure behaves, its shape and height are not modelled, and there are no live sensors unless entered.
+
 ## Pages
 
-Dashboard · Explore (ask a question, live map and interval) · Areas of interest (district, drawn polygon, GeoJSON/KML
+Dashboard · Explore (ask a question, live map and interval) · Change detection (two dates, mapped patches, evidence, ground movement) · Digital twins · Areas of interest (district, drawn polygon, GeoJSON/KML
 upload) · Monitors · Alerts · Reports (PDF preview, approve/reject, send, delivery log) · Recipients (officials
 directory and groups) · History · Data catalog (live source status, freshness per district) · Settings (API keys,
 webhooks, email) · Usage · Audit log. A notification bell and a first-run setup guide sit across the app.
@@ -52,6 +75,7 @@ Storage: PostgreSQL/PostGIS (users, sessions + result snapshots, records) · SQL
 engine/aeqe/sources/      one adapter per provider + registry, status ladder, http/retry/redaction, TTL cache
 engine/aeqe/providers/    live.py (India districts + custom AOIs) · simulated.py (demo) · composite.py (routing)
 engine/aeqe/advisory.py   recovery / prevention guidance
+engine/aeqe/eo/           change detection: detectors, indices, grid, forest evidence, population, facilities, risk, InSAR, twins, jobs
 engine/aeqe/data/         india_districts.json (geoBoundaries ADM2, ODbL) — rebuild with scripts/build_india_regions.py
 engine/scripts/           smoke_sources.py (live checks) · live_e2e.py (live end-to-end runs) · export_alphaearth.py
 backend/src/              features.ts (product API) · monitors.ts (scheduler) · delivery.ts · webhooks.ts · report.ts (PDF)
@@ -91,6 +115,7 @@ prebuilt wheels for the newest Python; if `pip install` fails, use Docker Deskto
 | `NASA_FIRMS_MAP_KEY` | firms.modaps.eosdis.nasa.gov/api/map_key | fire workflows, burned-area sampling |
 | `EARTHDATA_TOKEN` (or `EARTHDATA_USERNAME` + `EARTHDATA_PASSWORD`) | urs.earthdata.nasa.gov → Generate Token; approve *NASA GESDISC DATA ARCHIVE* and LANCE | IMERG rainfall and MODIS flood evidence |
 | `GOOGLE_CLOUD_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS` | Earth Engine–registered Cloud project + service-account JSON in `engine/credentials/` | AlphaEarth proxy features (optional) |
+| `EARTHDATA_TOKEN` (same one) | as above; no extra approval was needed for HyP3 | ground movement (InSAR). Free monthly credits; a pair costs 10–15 and takes about 20–90 minutes. The token expires after 60 days |
 | `SMTP_*` | e.g. Gmail App Password | emailing reports |
 
 Startup logs list which sources are configured (names only). `engine/credentials/`, `.env` and downloaded HDF files are
@@ -104,6 +129,7 @@ cd backend && npm test                      # 18 tests: SQLite accounts, no gues
 cd frontend && npm run build                # type-check + production build
 cd engine && python scripts/smoke_sources.py          # bounded live, read-only check of every provider
 cd engine && python scripts/live_e2e.py flood|fire|fire_find|built|burned   # live end-to-end runs
+cd engine && python scripts/live_detection.py sar_flood in-assam-barpeta 2024-03-15 2024-07-05   # live change detection
 cd engine && python -m bench.coverage --runs 100 && python -m bench.report  # coverage benchmark (simulated districts)
 ```
 
@@ -127,6 +153,24 @@ cd engine && python -m bench.coverage --runs 100 && python -m bench.report  # co
 * **Automatic email.** Every generated report (from Explore, a monitor or the daily bulletin) is emailed with both
   PDFs to `REPORT_AUTO_EMAIL` (comma-separated) as soon as it is created, independent of the approval step for
   officials. Each send is logged in the report's delivery log and the audit log.
+
+## Escalation to higher authorities
+
+Each recipient has a **level** (block/field, district, state, national) and a **reports-to** person, shown as a chain of
+command on the Recipients page. A monitor can switch on escalation:
+
+* the people ticked on the monitor are emailed first, with a link to confirm;
+* a value at or above the *severe* level also tells one level up straight away, and at or above *critical* two levels up;
+* if nobody confirms within the set number of minutes, the next level up is told, then the next, until someone confirms
+  or the top is reached. Confirming (by the email link, or Acknowledge in the app) stops it;
+* **Escalate now** moves it up one level by hand, and **Drill** rehearses the whole chain without running a satellite
+  analysis. A drill is labelled as one in every email and in the app.
+
+Every notification, failure, confirmation and escalation is on the alert and in the audit log. A failed email is shown as
+failed, never hidden. These messages are short and say that the figure is a satellite estimate that may not have been
+reviewed; reports still wait for human approval as before. Email is the only channel built (it needs the `SMTP_*`
+settings, nothing else). WhatsApp and Slack can be reached through the webhook and n8n route; SMS needs DLT registration.
+The hierarchy belongs to each user's own recipient list, and there are no admin roles yet.
 
 ## n8n report delivery
 
@@ -190,11 +234,26 @@ Checklist for a server:
   calibration against reference data (e.g. PRSC burned-area maps or field reports) before its numbers are used. FIRMS
   fire counts are the validated fire signal.
 * MODIS NRT flood files are kept only for a short rolling window, so past events have no MODIS evidence.
-* Teams/roles, WhatsApp and SMS delivery are not built yet (phase 2; SMS in India needs DLT registration).
+* Admin roles and organisation-wide hierarchies, WhatsApp and SMS delivery are not built yet (phase 2; SMS in India needs DLT registration).
+
+* **Change detection** is limited to 1.5° per side (`AEQE_EO_MAX_SPAN_DEG`), which excludes 59 of the 735 districts; draw a
+  smaller area for those. Grids are capped at 1.4 M pixels (`AEQE_EO_MAX_PIXELS`), so a whole district is analysed at
+  roughly 60–100 m, not 10 m. A smaller area gets a finer grid.
+* **A radar flood result depends heavily on the "before" date and the water threshold.** Use a dry-season date to measure
+  a monsoon flood. Over Barpeta in July 2024 the fixed −17 dB threshold gave 103 km² (range 38–192), while AEQE's dry-season
+  method estimated about 19.5 % of cropland. The two disagree and no ground truth is available to settle it; AEQE's
+  flood oracle was not changed by this work.
+* **Ground movement from one pair is a screening signal.** It is along the line of sight, relative to nearby ground, and
+  cannot separate movement from atmosphere. Vegetation, snow, water and very fast movement lose coherence and give no
+  reading, so "not detected" covers only the measured pixels. HyP3 keeps its files for 14 days; the numbers needed here are
+  saved locally when a run finishes.
+* WorldPop's statistics API currently returns no data, so population has no second dataset and no range until it recovers.
+  OSM facility counts are often incomplete in rural India, and the public Overpass servers can be slow or time out.
 
 ## Data credits
 
-Copernicus Sentinel data (ESA) via Microsoft Planetary Computer and the Copernicus Data Space Ecosystem; ESA WorldCover
-2021 (CC BY 4.0); Copernicus DEM GLO-30; NASA FIRMS; NASA GPM IMERG and LANCE MODIS NRT flood product; Open-Meteo and
+InSAR processing by NASA ASF HyP3 (GAMMA software); Copernicus Sentinel data (ESA) via Microsoft Planetary Computer and the Copernicus Data Space Ecosystem; ESA WorldCover
+2021 (CC BY 4.0); Copernicus DEM GLO-30; NASA FIRMS; Hansen/UMD/Google/USGS/NASA Global Forest Change (CC BY 4.0); JRC Global Surface Water; Meta High Resolution
+Settlement Layer and WorldPop (CC BY 4.0); OpenStreetMap contributors (ODbL); NASA GPM IMERG and LANCE MODIS NRT flood product; Open-Meteo and
 Copernicus GloFAS; district boundaries © geoBoundaries contributors (ODbL 1.0); Google AlphaEarth Foundations satellite
 embeddings (when enabled).

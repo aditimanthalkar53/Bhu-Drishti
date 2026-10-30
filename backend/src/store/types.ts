@@ -45,7 +45,7 @@ export interface ApiKey {
 
 /** Owner-scoped JSON records for the product features (areas, monitors, reports, recipients…). */
 export type RecordKind =
-  | "aoi" | "monitor" | "alert" | "report" | "recipient" | "group" | "delivery" | "webhook" | "notification" | "audit"
+  | "aoi" | "monitor" | "alert" | "report" | "recipient" | "group" | "delivery" | "webhook" | "notification" | "audit" | "detection" | "twin"
   | "reset"       // password-reset tokens (hash only, 30-minute expiry)
   | "tokens";     // per-user "tokens issued before this instant are revoked"
 

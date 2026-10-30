@@ -1,20 +1,28 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { audit, autoDeliver, autoEmailTargets, buildReportPdf, deliveryMode, logDelivery, notify, reportPayload, reportRecipients, reportSummary, sendReport } from "./delivery.js";
-import { WEBHOOK_EVENTS, type AOI, type Alert, type AuditEntry, type Delivery, type Group, type Monitor, type Notification,
+import { WEBHOOK_EVENTS, type AOI, type Alert, type Escalation, type AuditEntry, type Delivery, type Group, type Monitor, type Notification,
   type Recipient, type Report, type Webhook } from "./domain.js";
 import { smtpConfigured } from "./email.js";
 import { EngineClient, EngineError } from "./engine-client.js";
 import { MonitorScheduler, nextRun } from "./monitors.js";
 import type { RecordKind, Store, StoredRecord } from "./store/types.js";
 import { deliver, isAllowedUrl, newSecret } from "./webhooks.js";
+import { ackValid, confirmByRecipient, escalate, LEVELS, MAX_LEVEL, wouldLoop } from "./escalation.js";
 
 type IdParams = { Params: { id: string } };
 const now = () => new Date().toISOString();
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
+function normaliseEscalation(e: Partial<Escalation> | null | undefined): Escalation | null {
+  if (!e || !e.enabled) return null;
+  return { enabled: true, ackMinutes: Math.max(1, Math.round(e.ackMinutes ?? 60)), severeValue: e.severeValue ?? null, criticalValue: e.criticalValue ?? null };
+}
+
 export interface FeatureOptions {
   publicUrl: string;
+  appUrl?: string;
+  secret?: string;
   allowPrivateWebhooks: boolean;
 }
 
@@ -115,6 +123,8 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
         hours: { type: "number", minimum: 1, maximum: 720 }, time: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" } } },
       threshold: { type: ["object", "null"], properties: { metric: { enum: ["value", "lo", "hi"] }, op: { enum: [">", ">=", "<", "<="] }, value: { type: "number" } } },
       recipientIds: { type: "array", items: { type: "string" }, maxItems: 200 }, groupIds: { type: "array", items: { type: "string" }, maxItems: 50 },
+      escalation: { type: ["object", "null"], properties: { enabled: { type: "boolean" }, ackMinutes: { type: "number", minimum: 1, maximum: 10080 },
+        severeValue: { type: ["number", "null"] }, criticalValue: { type: ["number", "null"] } } },
       autoReport: { type: "boolean" }, requireApproval: { type: "boolean" }, enabled: { type: "boolean" },
     },
   };
@@ -133,7 +143,7 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
       const m: Monitor = {
         id: randomUUID(), ownerId: req.userId!, createdAt: now(), name: b.name!.trim(), aoiId: aoi.id, regionId: aoi.regionId,
         question: b.question!.trim(), schedule: b.schedule!, threshold: b.threshold ?? null, recipientIds: b.recipientIds ?? [],
-        groupIds: b.groupIds ?? [], autoReport: b.autoReport ?? false, requireApproval: b.requireApproval ?? true,
+        groupIds: b.groupIds ?? [], escalation: normaliseEscalation(b.escalation), autoReport: b.autoReport ?? false, requireApproval: b.requireApproval ?? true,
         enabled: b.enabled ?? true, lastRunAt: null, lastQueryId: null, lastValue: null, lastStatus: null, lastError: null,
       };
       m.nextRunAt = nextRun(m);
@@ -150,6 +160,7 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     for (const k of ["name", "question", "schedule", "threshold", "recipientIds", "groupIds", "autoReport", "requireApproval", "enabled"] as const) {
       if (k in b) (upd as any)[k] = (b as any)[k];
     }
+    if ("escalation" in b) upd.escalation = normaliseEscalation(b.escalation);
     upd.nextRunAt = nextRun(upd);
     await store.putRecord("monitor", upd);
     await audit(store, req.userId!, req.userId!, "monitor.update", `monitor:${m.id}`, { fields: Object.keys(b) }, await actorName(req));
@@ -169,6 +180,15 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     if (!m) return;
     void scheduler.run(m, req.userId!);
     return reply.code(202).send({ ok: true, message: "monitor run started" });
+  });
+
+  app.post<IdParams & { Body: { value?: number } }>("/api/monitors/:id/drill", {
+    ...auth, schema: { body: { type: ["object", "null"], properties: { value: { type: "number" } } } },
+  }, async (req, reply) => {
+    const m = await owned<Monitor>("monitor", req, reply);
+    if (!m) return;
+    if (!m.escalation?.enabled) return reply.code(400).send({ error: "Turn on escalation for this monitor first." });
+    return reply.code(201).send(await scheduler.drill(m, req.body?.value ?? m.threshold?.value ?? null, await actorName(req)));
   });
 
   // ------------------------------------------------------------------ alerts
@@ -192,16 +212,52 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     return a;
   });
 
+  const ctx = () => ({ store, secret: opts.secret ?? "dev", publicUrl: opts.publicUrl, appUrl: opts.appUrl ?? "" });
+
+  app.post<IdParams>("/api/alerts/:id/escalate", auth, async (req, reply) => {
+    const a = await owned<Alert>("alert", req, reply);
+    if (!a) return;
+    if (a.status === "resolved") return reply.code(400).send({ error: "This alert is already resolved." });
+    const up = await escalate(ctx(), a, "manual", await actorName(req));
+    return { alert: await store.getRecord<Alert>("alert", a.id), toldNow: up.map((r) => ({ id: r.id, name: r.name, level: r.level ?? 1 })) };
+  });
+
+  /** Opened from the email each official receives, so it needs no login. The signature ties it to one alert and one person. */
+  app.get<{ Params: { id: string }; Querystring: { r?: string; s?: string } }>("/api/alerts/:id/ack", async (req, reply) => {
+    const page = (code: number, title: string, body: string) => reply.code(code).type("text/html; charset=utf-8").header("cache-control", "no-store")
+      .send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>` +
+        `<body style="font:16px system-ui;max-width:32rem;margin:15vh auto;padding:0 1rem"><h1 style="font-size:1.3rem">${title}</h1><p>${body}</p></body>`);
+    const { r, s } = req.query;
+    const a = await store.getRecord<Alert>("alert", req.params.id);
+    if (!a || !r || !s || !ackValid(opts.secret ?? "dev", a.id, r, s)) return page(400, "This link is not valid", "Ask the sender for a new one.");
+    const person = await store.getRecord<Recipient>("recipient", r);
+    if (!person || person.ownerId !== a.ownerId) return page(400, "This link is not valid", "Ask the sender for a new one.");
+    const out = await confirmByRecipient(ctx(), a, person);
+    return page(200, out === "confirmed" ? "Thank you, confirmed" : "Already confirmed", `${person.name}, your confirmation of “${a.title}” is recorded${a.drill ? " (this was a drill)" : ""}.`);
+  });
+
   // ------------------------------------------------------------------ recipients & groups
   const recipientSchema = {
     type: "object",
     properties: {
+      level: { type: "integer", minimum: 1, maximum: MAX_LEVEL }, reportsToId: { type: ["string", "null"] },
       name: { type: "string", minLength: 1, maxLength: 120 }, designation: { type: "string", maxLength: 120 }, department: { type: "string", maxLength: 120 },
       state: { type: "string", maxLength: 80 }, district: { type: "string", maxLength: 80 }, regionIds: { type: "array", items: { type: "string" }, maxItems: 100 },
       email: { type: "string", maxLength: 200 }, phone: { type: "string", maxLength: 30 }, channels: { type: "array", items: { enum: ["email", "whatsapp", "sms"] } },
       groupIds: { type: "array", items: { type: "string" }, maxItems: 50 }, active: { type: "boolean" },
     },
   };
+
+  /** A reports-to link must point at one of this user's own recipients and must not make a loop. */
+  async function checkChain(ownerId: string, id: string | undefined, reportsToId: string | null | undefined): Promise<string | null> {
+    if (!reportsToId) return null;
+    const all = await store.listRecords<Recipient>("recipient", ownerId);
+    if (!all.some((r) => r.id === reportsToId)) return "The person this one reports to was not found.";
+    if (id && wouldLoop(all, id, reportsToId)) return "That would make a loop: someone cannot report to themselves or to someone who reports to them.";
+    return null;
+  }
+
+  app.get("/api/hierarchy-levels", auth, async () => LEVELS);
 
   app.get<{ Querystring: { area?: string; group?: string } }>("/api/recipients", auth, async (req) => {
     let rs = await store.listRecords<Recipient>("recipient", req.userId!);
@@ -214,7 +270,9 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     const b = req.body;
     const email = b.email!.trim().toLowerCase();
     if (!EMAIL.test(email)) return reply.code(400).send({ error: "invalid email" });
-    const r: Recipient = { id: randomUUID(), ownerId: req.userId!, createdAt: now(), name: b.name!.trim(), designation: b.designation ?? "",
+    const chain = await checkChain(req.userId!, undefined, b.reportsToId);
+    if (chain) return reply.code(400).send({ error: chain });
+    const r: Recipient = { id: randomUUID(), ownerId: req.userId!, createdAt: now(), level: b.level ?? 1, reportsToId: b.reportsToId ?? null, name: b.name!.trim(), designation: b.designation ?? "",
       department: b.department ?? "", state: b.state ?? "", district: b.district ?? "", regionIds: b.regionIds ?? [], email, phone: b.phone ?? "",
       channels: b.channels?.length ? b.channels : ["email"], groupIds: b.groupIds ?? [], active: b.active ?? true };
     await store.putRecord("recipient", r);
@@ -231,6 +289,10 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
       if (!EMAIL.test(email)) return reply.code(400).send({ error: "invalid email" });
       b.email = email;
     }
+    if ("reportsToId" in b) {
+      const chain = await checkChain(req.userId!, r.id, b.reportsToId);
+      if (chain) return reply.code(400).send({ error: chain });
+    }
     const upd = { ...r, ...b, id: r.id, ownerId: r.ownerId, createdAt: r.createdAt } as Recipient;
     await store.putRecord("recipient", upd);
     await audit(store, req.userId!, req.userId!, "recipient.update", `recipient:${r.id}`, { fields: Object.keys(b) }, await actorName(req));
@@ -241,6 +303,10 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     const r = await owned<Recipient>("recipient", req, reply);
     if (!r) return;
     await store.deleteRecord("recipient", r.id);
+    // nobody may keep reporting to someone who was removed: they move up to that person's own boss
+    for (const x of await store.listRecords<Recipient>("recipient", req.userId!)) {
+      if (x.reportsToId === r.id) await store.putRecord("recipient", { ...x, reportsToId: r.reportsToId ?? null });
+    }
     await audit(store, req.userId!, req.userId!, "recipient.delete", `recipient:${r.id}`, { email: r.email }, await actorName(req));
     return { ok: true };
   });

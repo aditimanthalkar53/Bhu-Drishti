@@ -1,11 +1,29 @@
 import { useState } from "react";
 import { del, patch, post } from "../api";
 import { RegionPicker } from "../components/RegionPicker";
-import type { Group, Recipient, Region } from "../types";
+import { LEVELS, type Group, type Recipient, type Region } from "../types";
 import { Empty, ErrorNote, Page, Pill, useAction, useData } from "./common";
 
 const DEPARTMENTS = ["DDMA", "SDMA", "Revenue", "Agriculture", "Water Resources", "Health", "Fire & Emergency", "Pollution Control Board", "Town Planning", "Other"];
-const blank = { name: "", designation: "", department: "DDMA", email: "", phone: "", district: "", state: "", regionIds: [] as string[], groupIds: [] as string[] };
+const blank = { name: "", designation: "", department: "DDMA", email: "", phone: "", district: "", state: "", level: 1, reportsToId: "", regionIds: [] as string[], groupIds: [] as string[] };
+
+/** Everyone under one official, shown as an indented chain. A person whose boss was removed shows at the top. */
+function Chain({ people, boss, depth }: { people: Recipient[]; boss: string | null; depth: number }) {
+  const rows = people.filter((p) => (p.reportsToId ?? null) === boss || (boss === null && p.reportsToId && !people.some((x) => x.id === p.reportsToId)));
+  if (depth > 6 || rows.length === 0) return null;
+  return (
+    <ul className="org-tree">
+      {rows.sort((a, b) => (b.level ?? 1) - (a.level ?? 1) || a.name.localeCompare(b.name)).map((p) => (
+        <li key={p.id}>
+          <span className={`org-node ${p.active ? "" : "row-off"}`}>
+            <span className="pill pill-info">{LEVELS[p.level ?? 1]}</span> <strong>{p.name}</strong>{p.designation && <span className="muted small"> · {p.designation}</span>}
+          </span>
+          <Chain people={people} boss={p.id} depth={depth + 1} />
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 export function RecipientsPage() {
   const recipients = useData<Recipient[]>("/api/recipients");
@@ -22,7 +40,7 @@ export function RecipientsPage() {
 
   const save = () => act.run("save", async () => {
     const rg = regions.data?.find((r) => r.id === region);
-    await post("/api/recipients", { ...form, regionIds: region ? [region] : [], district: form.district || rg?.name || "", state: form.state || rg?.state || "", channels: ["email"] });
+    await post("/api/recipients", { ...form, reportsToId: form.reportsToId || null, regionIds: region ? [region] : [], district: form.district || rg?.name || "", state: form.state || rg?.state || "", channels: ["email"] });
     setForm(blank);
     setRegion("");
     await recipients.reload();
@@ -40,6 +58,17 @@ export function RecipientsPage() {
             <label className="field"><span>Designation</span><input value={form.designation} placeholder="e.g. District Magistrate" onChange={(e) => setForm({ ...form, designation: e.target.value })} /></label>
             <label className="field"><span>Department</span>
               <select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}>{DEPARTMENTS.map((d) => <option key={d}>{d}</option>)}</select>
+            </label>
+            <label className="field"><span>Level in the hierarchy</span>
+              <select value={form.level} onChange={(e) => setForm({ ...form, level: Number(e.target.value) })}>
+                {Object.entries(LEVELS).map(([k, v]) => <option key={k} value={k}>{k}. {v}</option>)}
+              </select>
+            </label>
+            <label className="field"><span>Reports to</span>
+              <select value={form.reportsToId} onChange={(e) => setForm({ ...form, reportsToId: e.target.value })}>
+                <option value="">Nobody (top of the chain)</option>
+                {(recipients.data ?? []).filter((r) => r.active).sort((a, b) => (b.level ?? 1) - (a.level ?? 1)).map((r) => <option key={r.id} value={r.id}>{r.name}, {LEVELS[r.level ?? 1]}</option>)}
+              </select>
             </label>
             <label className="field"><span>Email</span><input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></label>
             <label className="field"><span>Phone <span className="muted">(for WhatsApp/SMS later)</span></span><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></label>
@@ -87,6 +116,12 @@ export function RecipientsPage() {
       </div>
 
       <section className="card">
+        <h2>Chain of command</h2>
+        <p className="muted small">Alerts go to a monitor's own recipients first, then up this chain when they are severe or when nobody confirms in time.</p>
+        {(recipients.data?.length ?? 0) === 0 ? <p className="muted small">Add recipients and say who each one reports to.</p> : <Chain people={recipients.data ?? []} boss={null} depth={0} />}
+      </section>
+
+      <section className="card">
         <div className="ev-head">
           <h2>Directory ({recipients.data?.length ?? 0})</h2>
           <input className="input" placeholder="Search name, department, district…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search recipients" />
@@ -95,11 +130,21 @@ export function RecipientsPage() {
         {list.length > 0 && (
           <div className="table-scroll">
             <table className="tbl">
-              <thead><tr><th>Name</th><th>Department</th><th>Email</th><th>District</th><th>Groups</th><th>Status</th><th /></tr></thead>
+              <thead><tr><th>Name</th><th>Level</th><th>Reports to</th><th>Department</th><th>Email</th><th>District</th><th>Groups</th><th>Status</th><th /></tr></thead>
               <tbody>
                 {list.map((r) => (
                   <tr key={r.id} className={r.active ? "" : "row-off"}>
                     <td><strong>{r.name}</strong><div className="muted small">{r.designation}</div></td>
+                    <td>{LEVELS[r.level ?? 1]}</td>
+                    <td>
+                      <select className="input" aria-label={`Who ${r.name} reports to`} value={r.reportsToId ?? ""} onChange={(e) => void act.run(`rt-${r.id}`, async () => {
+                        await patch(`/api/recipients/${r.id}`, { reportsToId: e.target.value || null });
+                        await recipients.reload();
+                      })}>
+                        <option value="">Nobody</option>
+                        {(recipients.data ?? []).filter((x) => x.id !== r.id).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                      </select>
+                    </td>
                     <td>{r.department}</td>
                     <td>{r.email}</td>
                     <td>{r.district || (r.regionIds[0] ? regionName(r.regionIds[0]) : "–")}</td>
