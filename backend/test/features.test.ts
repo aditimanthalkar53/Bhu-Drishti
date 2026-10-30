@@ -383,6 +383,10 @@ test("hierarchy and escalation end to end: levels, drills, manual and timed esca
   const sent: { to: string; subject: string; text: string }[] = [];
   let failFor: string | null = null;
   setMailer(async (to, subject, text) => { if (to === failFor) throw new Error("mailbox full"); sent.push({ to, subject, text }); });
+  // This test moves the scheduler clock forward to trigger escalation. Monitors left by other tests (a daily 08:00 IST one)
+  // would also become due, depending on the time of day, and start a background run after the test has closed the database.
+  const realRun = app.scheduler.run;
+  app.scheduler.run = async () => null;
   try {
     const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "chain@example.org", password: "password123", name: "Chain Admin" } });
     const U = { authorization: `Bearer ${reg.json().token}` };
@@ -475,6 +479,7 @@ test("hierarchy and escalation end to end: levels, drills, manual and timed esca
     const audit = (await app.inject({ method: "GET", url: "/api/audit", headers: U })).json();
     assert.ok(audit.some((e: any) => e.action === "alert.drill") && audit.some((e: any) => e.action === "alert.notify") && audit.some((e: any) => e.action === "alert.confirmed"));
   } finally {
+    app.scheduler.run = realRun;
     setMailer(null);
   }
 });
