@@ -1,0 +1,66 @@
+# Render Blueprint: backend API + engine (private) + Postgres.  The website goes on Vercel (frontend/vercel.json).
+# New → Blueprint → pick this repo. Then fill the `sync: false` variables in the dashboard.
+# Sizing: the engine loads rasterio/GDAL and reads satellite rasters, so use at least `standard` (2 GB) for live data.
+# A persistent disk (engine job cache) needs a paid plan; free plans also sleep, which breaks running analyses.
+databases:
+  - name: bhudrishti-db
+    plan: basic-256mb
+    databaseName: bhudrishti
+    user: bhudrishti
+
+services:
+  - type: pserv                       # private: reachable only by the backend, never from the internet
+    name: bhudrishti-engine
+    runtime: docker
+    dockerContext: ./engine
+    dockerfilePath: ./engine/Dockerfile
+    plan: standard
+    healthCheckPath: /health
+    disk:
+      name: engine-data
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - { key: PORT, value: "8000" }              # matches the Dockerfile's uvicorn port
+      - { key: AEQE_PROVIDER, value: auto }
+      - { key: AEQE_SEQUENTIAL, value: spending }
+      - { key: AEQE_WORKERS, value: "12" }
+      - { key: GDAL_HTTP_MAX_RETRY, value: "4" }
+      - { key: GDAL_HTTP_RETRY_DELAY, value: "2" }
+      - { key: GDAL_HTTP_RETRY_CODES, value: "429,500,502,503,504" }
+      - { key: GDAL_HTTP_TIMEOUT, value: "60" }
+      - { key: CDSE_CLIENT_ID, sync: false }
+      - { key: CDSE_CLIENT_SECRET, sync: false }
+      - { key: NASA_FIRMS_MAP_KEY, sync: false }
+      - { key: EARTHDATA_TOKEN, sync: false }
+      - { key: ANTHROPIC_API_KEY, sync: false }   # optional (AEQE_LLM=anthropic)
+
+  - type: web
+    name: bhudrishti-api
+    runtime: docker
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - { key: NODE_ENV, value: production }
+      - { key: JWT_SECRET, generateValue: true }
+      - { key: ALLOW_GUEST, value: "false" }
+      - { key: TRUST_PROXY, value: "1" }           # Render's load balancer is one hop
+      - { key: MONITOR_SCHEDULER, value: "true" }
+      - { key: MAX_CONCURRENT_RUNS, value: "2" }
+      - { key: REPORT_DELIVERY, value: smtp }
+      - key: DATABASE_URL
+        fromDatabase: { name: bhudrishti-db, property: connectionString }
+      - key: ENGINE_HOSTPORT
+        fromService: { type: pserv, name: bhudrishti-engine, property: hostport }
+      # the Vercel site, e.g. https://bhudrishti.vercel.app (comma-separate several; no trailing slash)
+      - { key: CORS_ORIGIN, sync: false }
+      - { key: PUBLIC_APP_URL, sync: false }       # same Vercel URL: used in password-reset links
+      - { key: PUBLIC_API_URL, sync: false }       # this service's own https URL, e.g. https://bhudrishti-api.onrender.com
+      - { key: REPORT_AUTO_EMAIL, sync: false }
+      - { key: SMTP_HOST, value: smtp.gmail.com }
+      - { key: SMTP_PORT, value: "465" }
+      - { key: SMTP_USER, sync: false }
+      - { key: SMTP_PASS, sync: false }
+      - { key: SMTP_FROM, sync: false }

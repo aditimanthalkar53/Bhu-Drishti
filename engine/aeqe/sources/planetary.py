@@ -20,6 +20,7 @@ import os
 import threading
 import time
 from datetime import date
+import os
 from functools import lru_cache
 from typing import Optional
 
@@ -70,6 +71,8 @@ class PlanetarySource(Source):
     requires = ()
     concurrency = max(8, int(os.getenv("AEQE_WORKERS", "8")))   # one slot per oracle worker
     capabilities = [
+        Capability("jrc-gsw", "landcover", "JRC Global Surface Water occurrence (permanent-water mask for radar flood detection)", "1984–2021 summary",
+                   30, "static", "long-term occurrence, not the current water extent"),
         Capability("sentinel-1-rtc", "imagery", "Sentinel-1 RTC VV/VH backscatter, terrain corrected", "2014–present, 6–12 day revisit",
                    10, "typically hours to a few days after acquisition", "C-band SAR; sees through cloud; flood signal is low VV"),
         Capability("sentinel-2-l2a", "imagery", "Sentinel-2 L2A surface reflectance", "2015–present, ~5 day revisit", 10,
@@ -83,6 +86,7 @@ class PlanetarySource(Source):
     def __init__(self):
         super().__init__()
         self._client = None
+        self._down_until = 0.0
         self._lock = threading.Lock()
 
     # -- clients
@@ -94,7 +98,12 @@ class PlanetarySource(Source):
                     import pystac_client
                 except ImportError as e:  # pragma: no cover - depends on optional deps
                     raise SourceError(self.id, "not_configured", f"install requirements-real.txt ({e.name} missing)") from e
-                self._client = pystac_client.Client.open(STAC_URL, modifier=planetary_computer.sign_inplace)
+                # pystac-client's default has no read timeout: a catalogue that accepts the connection but never answers
+                # would block every query for minutes. Fail after ~25 s per request instead.
+                from pystac_client.stac_api_io import StacApiIO
+                io = StacApiIO(timeout=(float(os.getenv("AEQE_STAC_CONNECT_S", "8")), float(os.getenv("AEQE_STAC_READ_S", "25"))),
+                               max_retries=1)
+                self._client = pystac_client.Client.open(STAC_URL, modifier=planetary_computer.sign_inplace, stac_io=io)
             return self._client
 
     def configured(self) -> tuple[bool, str]:
@@ -115,6 +124,9 @@ class PlanetarySource(Source):
         if query:
             kw["query"] = query
         last: Optional[Exception] = None
+        if time.time() < self._down_until:   # it just timed out: do not make every tile and query wait again
+            raise SourceError(self.id, "unavailable", "Microsoft Planetary Computer is not responding right now; "
+                              "it was tried moments ago. Try again in a minute (cached districts still work).")
         for attempt in range(3):
             try:
                 with self._sem:
@@ -124,7 +136,10 @@ class PlanetarySource(Source):
             except Exception as e:  # noqa: BLE001 — pystac wraps HTTP errors in several types
                 last = e
                 msg = str(e)
-                if "429" in msg or "503" in msg or "502" in msg or "timed out" in msg.lower() or "Connection" in msg:
+                if "timed out" in msg.lower() or "timeout" in msg.lower():
+                    self._down_until = time.time() + float(os.getenv("AEQE_STAC_COOLDOWN_S", "60"))
+                    break   # already waited for the timeout once; a second wait would only double the delay
+                if "429" in msg or "503" in msg or "502" in msg or "Connection" in msg:
                     time.sleep(1.5 * (2 ** attempt))
                     continue
                 break
@@ -142,6 +157,7 @@ class PlanetarySource(Source):
         import planetary_computer
 
         last: Optional[Exception] = None
+        items = fresh_signed(items)   # cached items carry the SAS token from search time; it expires, and GDAL then retries 403s for minutes
         for attempt in range(4):
             # last attempt: skip assets that keep failing (they become nodata = unobserved), instead of losing the tile
             strict = attempt < 3
@@ -155,7 +171,7 @@ class PlanetarySource(Source):
                 last = e
                 msg = str(e)
                 if ("403" in msg or "AuthenticationFailed" in msg or "Signature" in msg) and attempt == 0:
-                    items = [planetary_computer.sign(i) for i in items]   # fresh SAS token
+                    items = fresh_signed(items)   # sign() alone leaves an expired token in place, so strip it first
                     continue
                 time.sleep(1.5 * (2 ** attempt))   # transient: throttling, truncated responses, 'Chunk and warp failed'
         err = SourceError(self.id, "unavailable", redact(f"COG read failed ({', '.join(bands)}): {type(last).__name__}: {str(last)[:300]}"))
@@ -219,6 +235,26 @@ class PlanetarySource(Source):
                    lambda: {"shape": list(self.dem(bbox, 0.002).shape)}, on_ok=Status.RETRIEVAL_VERIFIED)
         return self._steps
 
+
+
+def fresh_signed(items: list) -> list:
+    """Copies of ``items`` whose blob-storage hrefs carry a newly issued SAS token.
+
+    ``planetary_computer.sign`` returns an href unchanged when it already has a token, even an expired one, so the
+    old query string is removed first. The library caches tokens per container, so this costs no extra request
+    while the token is still valid."""
+    import planetary_computer
+    from urllib.parse import urlsplit, urlunsplit
+
+    out = []
+    for it in items:
+        c = it.clone()
+        for a in c.assets.values():
+            parts = urlsplit(a.href)
+            if parts.netloc.endswith("blob.core.windows.net") and {"st", "se", "sp"} & set(q.split("=")[0] for q in parts.query.split("&")):
+                a.href = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        out.append(planetary_computer.sign(c))
+    return out
 
 @lru_cache(maxsize=1)
 def planetary() -> PlanetarySource:

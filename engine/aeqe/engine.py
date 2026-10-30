@@ -344,12 +344,9 @@ class Engine:
         job.live = self.provider.is_live(ir)
         job.emit({"type": "status", "stage": "preparing",
                   "message": "Tiling the region and computing proxy scores from live data…" if job.live else "Preparing tiles…"})
-        set_status_callback(lambda msg: job.emit({"type": "status", "stage": "preparing", "message": msg,
-                                                  "elapsed_s": round(time.perf_counter() - t_start, 1)}))
-        try:
-            u = self.provider.universe(ir)
-        finally:
-            set_status_callback(None)
+        u = self._prepare(job, t_start)
+        if u is None:
+            return   # stopped while the district was being prepared
         oracle = self.provider.oracle(ir, sensor)
         scene_key = self.provider.scene_key(ir, sensor)
         job.universe = u
@@ -516,6 +513,51 @@ class Engine:
                                     "Widen the date window or try again later. Partial figure: " + result["answer"])
         self._finish(job, result, [u.tile_ids[i] for i in state.order], stop_reason)
 
+    def _prepare(self, job: Job, t_start: float) -> Optional[TileUniverse]:
+        """Build the tile universe in a helper thread so Stop works during the (possibly minutes-long) live preparation.
+        On stop the job ends at once as "stopped"; the helper finishes in the background and its layers stay cached."""
+        box: dict = {}
+
+        def build():
+            set_status_callback(lambda msg: job.emit({"type": "status", "stage": "preparing", "message": msg,
+                                                      "elapsed_s": round(time.perf_counter() - t_start, 1)}))
+            try:
+                box["u"] = self.provider.universe(job.ir)
+            except BaseException as e:  # noqa: BLE001 — re-raised in the job thread
+                box["error"] = e
+            finally:
+                set_status_callback(None)
+
+        t = threading.Thread(target=build, daemon=True, name=f"prepare-{job.id}")
+        t.start()
+        while t.is_alive():
+            if job.stop_requested:
+                self._stopped_before_start(job, t_start)
+                return None
+            t.join(0.25)
+        if "error" in box:
+            raise box["error"]
+        return box["u"]
+
+    def _stopped_before_start(self, job: Job, t_start: float) -> None:
+        ir = job.ir
+        result = {
+            "estimate": None, "units": units_for(ir), "stop_reason": "user_stop", "n": 0, "population": 0,
+            "oracle_calls": 0, "cache_hits": 0, "elapsed_s": round(time.perf_counter() - t_start, 3),
+            "projected_exhaustive_s": 0, "caveats": [],
+            "answer": ("Stopped before the analysis started, so no tiles were analysed and there is no estimate. "
+                       "The district data downloaded so far is kept, so the next run here starts faster."),
+            "data_mode": "live" if job.live else "simulated",
+            "region": (lambda r: r.to_json(geometry=False) if r else None)(self.provider.region(ir.region_id)),
+            "query": {"task": ir.task.value, "target": ir.target.value, "start": ir.start.isoformat(), "end": ir.end.isoformat(),
+                      "baseline_start": ir.baseline_start.isoformat() if ir.baseline_start else None,
+                      "confidence": ir.confidence},
+        }
+        job.result = result
+        job.trace = {"engine": ENGINE_VERSION, "job_id": job.id, "result": result}
+        job.status = "stopped"
+        job.emit({"type": "result", **result})
+
     def _batch_for_time(self, job: Job, ir: QueryIR, t_start: float) -> int:
         """Shrink the batch when the time budget is nearly used, so a batch of slow live reads cannot overrun it by much."""
         cfg = self.config
@@ -533,7 +575,7 @@ class Engine:
 
     def _finish(self, job: Job, result: dict, sample_order: list[str], stop_reason: str) -> None:
         # supporting evidence runs in parallel; wait a bounded time for it
-        if job.replay_of is None:
+        if job.replay_of is None and stop_reason != "user_stop":   # a stop should end the run now, not after the context
             t0 = time.time()
             while job.evidence is None and time.time() - t0 < self.config.evidence_wait_s:
                 time.sleep(0.2)

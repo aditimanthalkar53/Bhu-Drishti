@@ -19,7 +19,7 @@ export class EngineClient {
       res = await fetch(this.base + path, {
         ...init,
         signal: init.signal ?? ac.signal,
-        headers: { "content-type": "application/json", ...(init.headers ?? {}) },
+        headers: { ...(init.body ? { "content-type": "application/json" } : {}), ...(init.headers ?? {}) },
       });
     } catch (e) {
       const msg = (e as Error).name === "AbortError" ? "engine request timed out" : (e as Error).message;

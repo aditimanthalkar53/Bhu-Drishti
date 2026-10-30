@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { patch } from "../api";
+import { patch, post } from "../api";
 import { ago, fmt, fmtDate } from "../format";
-import type { Alert } from "../types";
+import { LEVELS, type Alert } from "../types";
 import { Empty, ErrorNote, Page, Pill, useAction, useData } from "./common";
 
 export function AlertsPage() {
@@ -10,6 +10,12 @@ export function AlertsPage() {
   const [filter, setFilter] = useState<"open" | "all">("open");
   const [notes, setNotes] = useState<Record<string, string>>({});
   const act = useAction();
+  const [tick, setTick] = useState(0);
+  // chains move on their own, so refresh while something is open and keep the countdowns moving
+  useEffect(() => {
+    const t = setInterval(() => { setTick((n) => n + 1); if (alerts.data?.some((a) => a.status === "open" && a.escalation?.enabled)) void alerts.reload(); }, 15_000);
+    return () => clearInterval(t);
+  }, [alerts]);
   const list = (alerts.data ?? []).filter((a) => filter === "all" || a.status !== "resolved");
 
   const update = (a: Alert, body: Record<string, unknown>) => act.run(a.id, async () => {
@@ -40,6 +46,8 @@ export function AlertsPage() {
               Value {fmt(a.value, 1)} · rule: {a.threshold.metric === "lo" ? "lower bound" : a.threshold.metric === "hi" ? "upper bound" : "estimate"} {a.threshold.op} {a.threshold.value}
               {" · "}raised {ago(a.createdAt)} · <Link to={`/app?open=${a.queryId}`}>open the run</Link>
             </p>
+            {a.drill && <p className="notice notice-warn">Drill: a rehearsal of the alert chain. No satellite analysis was run.</p>}
+            {a.notified?.length > 0 && <Chain a={a} tick={tick} />}
             <details>
               <summary className="small">History ({a.history.length})</summary>
               <ul className="small">
@@ -51,6 +59,7 @@ export function AlertsPage() {
                 <input className="input" placeholder="Note (optional), e.g. field team dispatched" value={notes[a.id] ?? ""}
                   onChange={(e) => setNotes((n) => ({ ...n, [a.id]: e.target.value }))} aria-label="Note" />
                 {a.status === "open" && <button className="btn btn-small" disabled={act.busy === a.id} onClick={() => void update(a, { status: "acknowledged" })}>Acknowledge</button>}
+                {a.escalation?.enabled && <button className="btn btn-small" disabled={act.busy === a.id} onClick={() => void act.run(a.id, async () => { await post(`/api/alerts/${a.id}/escalate`); await alerts.reload(); })}>Escalate now</button>}
                 <button className="btn btn-small" disabled={act.busy === a.id} onClick={() => void update(a, { status: "resolved" })}>Resolve</button>
               </div>
             )}
@@ -58,5 +67,44 @@ export function AlertsPage() {
         ))}
       </div>
     </Page>
+  );
+}
+
+const clock = (iso: string) => new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+
+/** Who has been told, level by level, who confirmed, and when the next level will be told. */
+function Chain({ a, tick }: { a: Alert; tick: number }) {
+  void tick;
+  const byLevel = new Map<number, Alert["notified"]>();
+  for (const n of a.notified) byLevel.set(n.level, [...(byLevel.get(n.level) ?? []), n]);
+  const confirmed = new Set((a.confirmedBy ?? []).map((c) => c.recipientId));
+  const waitMs = a.status === "open" && a.escalation?.enabled
+    ? Date.parse(a.lastEscalatedAt ?? a.createdAt) + a.escalation.ackMinutes * 60_000 - Date.now() : null;
+  return (
+    <div className="alert-chain" aria-label="Who has been told">
+      <h3>Who has been told</h3>
+      <ol>
+        {[...byLevel.entries()].sort((x, y) => x[0] - y[0]).map(([level, rows]) => (
+          <li key={level}>
+            <span className="pill pill-info">{LEVELS[level] ?? `Level ${level}`}</span>
+            <ul>
+              {rows.map((n, i) => (
+                <li key={`${n.recipientId}-${i}`}>
+                  <strong>{n.name}</strong>{n.designation && <span className="muted"> · {n.designation}</span>}
+                  <span className="muted small"> · {clock(n.at)} · </span>
+                  {confirmed.has(n.recipientId) ? <span className="pill pill-ok">confirmed</span>
+                    : n.status === "failed" ? <span className="pill pill-error" title={n.error}>email failed</span> : <span className="pill pill-warn">waiting for confirmation</span>}
+                  <div className="muted small">{n.reason}</div>
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ol>
+      {waitMs !== null && (
+        <p className="small">{waitMs > 0 ? `If nobody confirms, the next level up is told in ${Math.ceil(waitMs / 60_000)} min.` : "The next level up is due to be told now."}</p>
+      )}
+      {a.confirmedBy && a.confirmedBy.length > 0 && <p className="small">Confirmed by {a.confirmedBy.map((c) => `${c.name} (${clock(c.at)})`).join(", ")}. Escalation has stopped.</p>}
+    </div>
   );
 }

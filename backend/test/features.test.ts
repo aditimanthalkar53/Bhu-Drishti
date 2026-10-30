@@ -5,6 +5,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { normaliseGeometry } from "../src/features.js";
+import { ackSignature, dueForEscalation, initialSteps, nextUp, setMailer, wouldLoop } from "../src/escalation.js";
 import { compare, isDue, lastDailySlot } from "../src/monitors.js";
 import { pdfText } from "../src/report.js";
 
@@ -40,6 +41,31 @@ async function fakeEngine(): Promise<FastifyInstance> {
   });
   f.get("/queries/:id", async (req: any, reply) => jobs.get(req.params.id) ?? reply.code(404).send({ detail: "no job" }));
   f.get("/queries/:id/evidence", async () => ({ type: "FeatureCollection", features: [{ type: "Feature", geometry: POLY, properties: { value: 1 } }] }));
+  // digital twins
+  f.get("/twins/osm", async () => [{ osmId: "way/1", name: "Test Bridge", assetType: "bridge", geometry: { type: "Point", coordinates: [91, 26] }, attributes: { material: "steel" } }]);
+  f.post("/twins/observations", async (req: any, reply) => {
+    if (req.body.geometry?.type === "Bad") return reply.code(422).send({ detail: "The asset needs a point, line or polygon." });
+    return req.body.detection_ids.map((id: string) => ({ detection_id: id, kind: "sar_flood", touches_asset: true }));
+  });
+  f.post("/twins/terrain", async (req: any) => ({ width: 2, height: 2, heights: [1, 2, 3, 4], lines: [[[0.5, 0.5]]], detection: req.body.detection_id ?? null }));
+  // change detection
+  const detections = new Map<string, any>();
+  let detectionCount = 0;
+  f.get("/detections/analyses", async () => ({ analyses: [{ kind: "sar_flood", label: "Flood detection (radar)" }], max_span_deg: 1.5 }));
+  f.post("/detections", async (req: any, reply) => {
+    if (req.body.kind === "nope") return reply.code(422).send({ detail: "Unknown analysis type." });
+    const id = `det-${detectionCount++}`;
+    detections.set(id, { id, kind: req.body.kind, label: "Flood detection (radar)", region_id: req.body.region_id, name: "Barpeta", before: req.body.before ?? "2026-09-01",
+      after: req.body.after ?? "2026-09-25", status: "running", error: null, summary: null, steps: [], record: null });
+    return reply.code(201).send(detections.get(id));
+  });
+  f.get("/detections/:id", async (req: any, reply) => detections.get(req.params.id) ?? reply.code(404).send({ detail: "no detection" }));
+  f.get("/detections/:id/overlays/:file", async (req: any, reply) => reply.header("content-type", "image/png").send(Buffer.from(`png:${req.params.file}`)));
+  f.delete("/detections/:id", async (req: any) => { detections.delete(req.params.id); return { ok: true }; });
+  f.post("/test/finish-detection/:id", async (req: any) => {
+    detections.set(req.params.id, { ...detections.get(req.params.id), status: "done", summary: { detected: true, area_km2: 12.5, risk: "high", confidence: "probable", noun: "probable inundation" } });
+    return { ok: true };
+  });
   await f.listen({ port: 0, host: "127.0.0.1" });
   return f;
 }
@@ -225,6 +251,232 @@ test("other users cannot see or change records", async () => {
   assert.equal((await app.inject({ url: `/api/reports/${reps[0].id}`, headers: H2 })).statusCode, 404);
   assert.equal((await app.inject({ method: "POST", url: `/api/reports/${reps[0].id}/approve`, headers: H2 })).statusCode, 404);
   assert.equal((await app.inject({ url: "/api/recipients", headers: H2 })).json().length, 0);
+});
+
+test("change detection: start, status, overlays, delete, and other users are refused", async () => {
+  const cat = await app.inject({ method: "GET", url: "/api/detections/analyses", headers: H });
+  assert.equal(cat.json().analyses[0].kind, "sar_flood");
+
+  const bad = await app.inject({ method: "POST", url: "/api/detections", headers: H, payload: { kind: "nope", regionId: "in-assam-barpeta" } });
+  assert.equal(bad.statusCode, 422);
+  const noDate = await app.inject({ method: "POST", url: "/api/detections", headers: H, payload: { kind: "sar_flood", regionId: "in-assam-barpeta", before: "soon" } });
+  assert.equal(noDate.statusCode, 400);
+
+  const started = await app.inject({ method: "POST", url: "/api/detections", headers: H, payload: { kind: "sar_flood", regionId: "in-assam-barpeta", before: "2024-03-15", after: "2024-07-05" } });
+  assert.equal(started.statusCode, 201);
+  const d = started.json();
+  assert.equal(d.status, "running");
+  assert.equal(d.before, "2024-03-15");
+
+  // a second run is allowed, a third goes over the per-user limit
+  const second = await app.inject({ method: "POST", url: "/api/detections", headers: H, payload: { kind: "sar_flood", regionId: "in-assam-barpeta" } });
+  assert.equal(second.statusCode, 201);
+  const third = await app.inject({ method: "POST", url: "/api/detections", headers: H, payload: { kind: "sar_flood", regionId: "in-assam-barpeta" } });
+  assert.equal(third.statusCode, 429);
+
+  const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "other-detect@example.org", password: "password123", name: "Other" } });
+  const other = { authorization: `Bearer ${reg.json().token}` };
+  assert.equal((await app.inject({ method: "GET", url: `/api/detections/${d.id}`, headers: other })).statusCode, 404);
+  assert.equal((await app.inject({ method: "GET", url: `/api/detections/${d.id}/overlays/change.png`, headers: other })).statusCode, 404);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/detections/${d.id}`, headers: other })).statusCode, 404);
+  assert.deepEqual((await app.inject({ method: "GET", url: "/api/detections", headers: other })).json(), []);
+  assert.equal((await app.inject({ method: "GET", url: `/api/detections/${d.id}` })).statusCode, 401);
+
+  // status follows the engine, in the detail view and the list
+  const port = (engine.server.address() as { port: number }).port;
+  await fetch(`http://127.0.0.1:${port}/test/finish-detection/${d.id}`, { method: "POST" });
+  assert.equal((await app.inject({ method: "GET", url: `/api/detections/${d.id}`, headers: H })).json().status, "done");
+  const row = (await app.inject({ method: "GET", url: "/api/detections", headers: H })).json().find((x: any) => x.id === d.id);
+  assert.equal(row.status, "done");
+  assert.equal(row.summary.area_km2, 12.5);
+
+  // overlays work with the token in the URL, as an <img> or map layer requests them
+  const token = H.authorization.slice("Bearer ".length);
+  const png = await app.inject({ method: "GET", url: `/api/detections/${d.id}/overlays/change.png?token=${token}` });
+  assert.equal(png.statusCode, 200);
+  assert.equal(png.headers["content-type"], "image/png");
+  assert.equal(png.body, "png:change.png");
+
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/detections/${d.id}`, headers: H })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: `/api/detections/${d.id}`, headers: H })).statusCode, 404);
+});
+
+test("ground movement waits have their own limit and do not block other analyses", async () => {
+  const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "insar@example.org", password: "password123", name: "InSAR" } });
+  const U = { authorization: `Bearer ${reg.json().token}` };
+  const start = (kind: string) => app.inject({ method: "POST", url: "/api/detections", headers: U, payload: { kind, regionId: "in-assam-barpeta" } });
+  for (let i = 0; i < 5; i++) assert.equal((await start("ground_deformation")).statusCode, 201);
+  assert.equal((await start("ground_deformation")).statusCode, 429);
+  assert.equal((await start("sar_flood")).statusCode, 201);    // five waiting on NASA do not stop a normal analysis
+});
+
+test("digital twins: create, records, observations, terrain, and other users are refused", async () => {
+  const POINT = { type: "Point", coordinates: [91, 26] };
+  const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "twin@example.org", password: "password123", name: "Engineer" } });
+  const U = { authorization: `Bearer ${reg.json().token}` };
+  const reg2 = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "twin-other@example.org", password: "password123", name: "Other" } });
+  const O = { authorization: `Bearer ${reg2.json().token}` };
+
+  assert.equal((await app.inject({ method: "GET", url: "/api/twins/osm?lat=26&lon=91", headers: U })).json()[0].name, "Test Bridge");
+  assert.equal((await app.inject({ method: "POST", url: "/api/twins", headers: U, payload: { name: "X", assetType: "bridge", geometry: { type: "Bad" } } })).statusCode, 422);
+  assert.equal((await app.inject({ method: "POST", url: "/api/twins", headers: U, payload: { name: "X", assetType: "spaceship", geometry: POINT } })).statusCode, 400);
+
+  const made = await app.inject({ method: "POST", url: "/api/twins", headers: U, payload: { name: "Test Bridge", assetType: "bridge", geometry: POINT, osmId: "way/1", attributes: { material: "steel" } } });
+  assert.equal(made.statusCode, 201);
+  const t = made.json();
+  assert.deepEqual(t.records, []);
+
+  const rec = await app.inject({ method: "POST", url: `/api/twins/${t.id}/records`, headers: U, payload: { type: "sensor", date: "2026-01-05", title: "Crack gauge", value: 1.5, unit: "mm" } });
+  assert.equal(rec.statusCode, 201);
+  assert.equal(rec.json().author, "Engineer");
+  assert.equal((await app.inject({ method: "POST", url: `/api/twins/${t.id}/records`, headers: U, payload: { type: "guess", date: "2026-01-05", title: "x" } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PATCH", url: `/api/twins/${t.id}`, headers: U, payload: { attributes: { material: "concrete" } } })).json().attributes.material, "concrete");
+
+  // only this user's finished analyses are read at the asset
+  const started = (await app.inject({ method: "POST", url: "/api/detections", headers: U, payload: { kind: "sar_flood", regionId: "in-assam-barpeta" } })).json();
+  const port = (engine.server.address() as { port: number }).port;
+  assert.deepEqual((await app.inject({ method: "GET", url: `/api/twins/${t.id}`, headers: U })).json().observations, []);
+  await fetch(`http://127.0.0.1:${port}/test/finish-detection/${started.id}`, { method: "POST" });
+  await app.inject({ method: "GET", url: `/api/detections/${started.id}`, headers: U });
+  const full = (await app.inject({ method: "GET", url: `/api/twins/${t.id}`, headers: U })).json();
+  assert.deepEqual(full.observations.map((o: any) => o.detection_id), [started.id]);
+  assert.equal(full.twin.records[0].title, "Crack gauge");
+
+  const terr = await app.inject({ method: "POST", url: `/api/twins/${t.id}/terrain`, headers: U, payload: { detectionId: started.id } });
+  assert.equal(terr.json().detection, started.id);
+
+  // another user can neither see the twin nor point its terrain at someone else's analysis
+  const mine = (await app.inject({ method: "POST", url: "/api/twins", headers: O, payload: { name: "Mine", assetType: "road", geometry: POINT } })).json();
+  assert.equal((await app.inject({ method: "POST", url: `/api/twins/${mine.id}/terrain`, headers: O, payload: { detectionId: started.id } })).statusCode, 404);
+  for (const [method, url] of [["GET", `/api/twins/${t.id}`], ["DELETE", `/api/twins/${t.id}`], ["POST", `/api/twins/${t.id}/terrain`]] as const) {
+    assert.equal((await app.inject({ method, url, headers: O, payload: method === "POST" ? {} : undefined })).statusCode, 404);
+  }
+  assert.equal((await app.inject({ method: "GET", url: "/api/twins", headers: O })).json().length, 1);
+  assert.equal((await app.inject({ method: "GET", url: "/api/twins" })).statusCode, 401);
+
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/twins/${t.id}/records/${rec.json().id}`, headers: U })).statusCode, 200);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/twins/${t.id}`, headers: U })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: `/api/twins/${t.id}`, headers: U })).statusCode, 404);
+});
+
+test("escalation chain rules: loops, next level up, vacancies, severity and timing", () => {
+  const r = (id: string, reportsToId: string | null, active = true): any => ({ id, reportsToId, active });
+  const all = [r("block", "district"), r("district", "state"), r("state", "national"), r("national", null)];
+  assert.equal(wouldLoop(all, "national", "block"), true);      // the top reporting to the bottom
+  assert.equal(wouldLoop(all, "block", "block"), true);
+  assert.equal(wouldLoop(all, "block", "state"), false);
+  assert.deepEqual(nextUp(all, ["block"]).map((x) => x.id), ["district"]);
+  assert.deepEqual(nextUp(all, ["block", "district"]).map((x) => x.id), ["state"]);   // already told people are not told again
+  assert.deepEqual(nextUp(all, ["national"]), []);
+  const vacancy = [r("block", "district"), r("district", "state", false), r("state", null)];
+  assert.deepEqual(nextUp(vacancy, ["block"]).map((x) => x.id), ["state"]);           // an inactive official is passed over
+  const esc = { enabled: true, ackMinutes: 30, severeValue: 50, criticalValue: 80 };
+  assert.deepEqual([null, 10, 50, 79, 80, 200].map((v) => initialSteps(v, esc)), [0, 0, 1, 1, 2, 2]);
+  const open: any = { status: "open", createdAt: "2026-10-30T10:00:00Z", escalation: esc };
+  assert.equal(dueForEscalation(open, new Date("2026-10-30T10:29:00Z")), false);
+  assert.equal(dueForEscalation(open, new Date("2026-10-30T10:30:00Z")), true);
+  assert.equal(dueForEscalation({ ...open, status: "acknowledged" }, new Date("2026-10-31T10:30:00Z")), false);   // confirmed: stop
+  assert.equal(dueForEscalation({ ...open, escalation: null }, new Date("2026-10-31T10:30:00Z")), false);
+});
+
+test("hierarchy and escalation end to end: levels, drills, manual and timed escalation, email confirmation", async () => {
+  const sent: { to: string; subject: string; text: string }[] = [];
+  let failFor: string | null = null;
+  setMailer(async (to, subject, text) => { if (to === failFor) throw new Error("mailbox full"); sent.push({ to, subject, text }); });
+  try {
+    const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "chain@example.org", password: "password123", name: "Chain Admin" } });
+    const U = { authorization: `Bearer ${reg.json().token}` };
+    const reg2 = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "chain-other@example.org", password: "password123", name: "Other" } });
+    const O = { authorization: `Bearer ${reg2.json().token}` };
+    const add = async (name: string, level: number, reportsToId: string | null) => {
+      const res = await app.inject({ method: "POST", url: "/api/recipients", headers: U, payload: { name, designation: `Officer ${level}`, email: `${name.toLowerCase().replace(/\W/g, "")}@gov.test`, level, reportsToId } });
+      assert.equal(res.statusCode, 201, res.body);
+      return res.json();
+    };
+    const state = await add("State Chief", 3, null);
+    const district = await add("District Collector", 2, state.id);
+    const block = await add("Block Officer", 1, district.id);
+    assert.equal(block.reportsToId, district.id);
+    assert.equal((await app.inject({ method: "POST", url: "/api/recipients", headers: U, payload: { name: "X", email: "x@gov.test", level: 9 } })).statusCode, 400);
+    assert.equal((await app.inject({ method: "POST", url: "/api/recipients", headers: U, payload: { name: "X", email: "x@gov.test", reportsToId: "nobody" } })).statusCode, 400);
+    assert.equal((await app.inject({ method: "PATCH", url: `/api/recipients/${state.id}`, headers: U, payload: { reportsToId: block.id } })).statusCode, 400);   // a loop
+    assert.equal((await app.inject({ method: "PATCH", url: `/api/recipients/${state.id}`, headers: O, payload: { reportsToId: null } })).statusCode, 404);
+
+    const aoi = (await app.inject({ method: "POST", url: "/api/aois", headers: U, payload: { regionId: "in-assam-barpeta" } })).json();
+    const monitor = (await app.inject({ method: "POST", url: "/api/monitors", headers: U, payload: {
+      name: "Barpeta flood", aoiId: aoi.id, question: "What percentage of cropland was flooded in the last 14 days?", schedule: { type: "manual" },
+      threshold: { metric: "value", op: ">=", value: 10 }, recipientIds: [block.id], escalation: { enabled: true, ackMinutes: 30, severeValue: 50, criticalValue: 80 } } })).json();
+    assert.equal(monitor.escalation.ackMinutes, 30);
+    const drill = async (value: number) => (await app.inject({ method: "POST", url: `/api/monitors/${monitor.id}/drill`, headers: U, payload: { value } })).json();
+    const told = (a: any) => a.notified.map((n: any) => n.name);
+
+    // severity decides how far up it goes straight away
+    sent.length = 0;
+    const small = await drill(20);
+    assert.deepEqual(told(small), ["Block Officer"]);
+    assert.equal(small.drill, true);
+    assert.match(sent[0].subject, /^DRILL: /);
+    assert.match(sent[0].text, /This is a drill/);
+    assert.deepEqual(told(await drill(60)), ["Block Officer", "District Collector"]);
+    assert.deepEqual(told(await drill(90)), ["Block Officer", "District Collector", "State Chief"]);
+
+    // a person escalates one step at a time, and the top of the chain is reported, not looped
+    const step1 = await app.inject({ method: "POST", url: `/api/alerts/${small.id}/escalate`, headers: U });
+    assert.deepEqual(step1.json().toldNow.map((x: any) => x.name), ["District Collector"]);
+    assert.deepEqual((await app.inject({ method: "POST", url: `/api/alerts/${small.id}/escalate`, headers: U })).json().toldNow.map((x: any) => x.name), ["State Chief"]);
+    const top = await app.inject({ method: "POST", url: `/api/alerts/${small.id}/escalate`, headers: U });
+    assert.deepEqual(top.json().toldNow, []);
+    assert.equal(top.json().alert.history.at(-1).action, "top of chain");
+    assert.equal((await app.inject({ method: "POST", url: `/api/alerts/${small.id}/escalate`, headers: O })).statusCode, 404);
+
+    // silence escalates on its own, once per waiting period
+    const quiet = await drill(20);
+    await app.scheduler.tick(new Date(Date.now() + 5 * 60_000));
+    assert.deepEqual(told((await app.inject({ method: "GET", url: "/api/alerts", headers: U })).json().find((a: any) => a.id === quiet.id)), ["Block Officer"]);
+    await app.scheduler.tick(new Date(Date.now() + 31 * 60_000));
+    const after = (await app.inject({ method: "GET", url: "/api/alerts", headers: U })).json().find((a: any) => a.id === quiet.id);
+    assert.deepEqual(told(after), ["Block Officer", "District Collector"]);
+    const toDistrict = sent.filter((m) => m.to === district.email && m.text.includes(`/api/alerts/${quiet.id}/ack`)).at(-1)!;
+    assert.match(toDistrict.text, /within 30 minutes/);
+    await app.scheduler.tick(new Date(Date.now() + 32 * 60_000));   // too soon after the last step
+    assert.equal((await app.inject({ method: "GET", url: "/api/alerts", headers: U })).json().find((a: any) => a.id === quiet.id).notified.length, 2);
+
+    // the emailed link confirms for one person, needs no login, cannot be forged, and stops further escalation
+    const link = toDistrict.text.match(/https?:\/\/\S+\/api\/alerts\/[\w-]+\/ack\?r=[\w-]+&s=\w+/)![0];
+    const path = link.slice(link.indexOf("/api/"));
+    assert.equal((await app.inject({ method: "GET", url: path.replace(/s=\w+$/, "s=forged") })).statusCode, 400);
+    assert.equal((await app.inject({ method: "GET", url: `/api/alerts/${quiet.id}/ack?r=${state.id}&s=${ackSignature("test", quiet.id, district.id)}` })).statusCode, 400);   // signature of someone else
+    const ok = await app.inject({ method: "GET", url: path });
+    assert.equal(ok.statusCode, 200);
+    assert.match(ok.body, /District Collector/);
+    assert.match(ok.body, /drill/);
+    assert.equal((await app.inject({ method: "GET", url: path })).body.includes("Already confirmed"), true);
+    const done = (await app.inject({ method: "GET", url: "/api/alerts", headers: U })).json().find((a: any) => a.id === quiet.id);
+    assert.equal(done.status, "acknowledged");
+    assert.deepEqual(done.confirmedBy.map((c: any) => c.name), ["District Collector"]);
+    await app.scheduler.tick(new Date(Date.now() + 500 * 60_000));
+    assert.equal((await app.inject({ method: "GET", url: "/api/alerts", headers: U })).json().find((a: any) => a.id === quiet.id).notified.length, 2);
+
+    // a failed email is recorded on the alert and does not stop the rest
+    failFor = state.email;
+    const rough = await drill(90);
+    assert.deepEqual(rough.notified.map((n: any) => `${n.name}:${n.status}`), ["Block Officer:sent", "District Collector:sent", "State Chief:failed"]);
+    assert.match(rough.notified[2].error, /mailbox full/);
+    failFor = null;
+
+    // removing an official re-links the people who reported to them
+    assert.equal((await app.inject({ method: "DELETE", url: `/api/recipients/${district.id}`, headers: U })).statusCode, 200);
+    const relinked = (await app.inject({ method: "GET", url: "/api/recipients", headers: U })).json().find((r: any) => r.id === block.id);
+    assert.equal(relinked.reportsToId, state.id);
+
+    // drills need the rule switched on, and are audited
+    const plain = (await app.inject({ method: "POST", url: "/api/monitors", headers: U, payload: { name: "Plain", aoiId: aoi.id, question: "What percentage of cropland was flooded in the last 14 days?", schedule: { type: "manual" } } })).json();
+    assert.equal((await app.inject({ method: "POST", url: `/api/monitors/${plain.id}/drill`, headers: U, payload: {} })).statusCode, 400);
+    const audit = (await app.inject({ method: "GET", url: "/api/audit", headers: U })).json();
+    assert.ok(audit.some((e: any) => e.action === "alert.drill") && audit.some((e: any) => e.action === "alert.notify") && audit.some((e: any) => e.action === "alert.confirmed"));
+  } finally {
+    setMailer(null);
+  }
 });
 
 test("webhook URLs are restricted unless private targets are allowed", async () => {

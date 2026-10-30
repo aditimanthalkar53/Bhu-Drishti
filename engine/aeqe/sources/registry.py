@@ -26,10 +26,13 @@ def all_sources() -> list[Source]:
     from .earthdata import earthdata
     from .earthengine import earth_engine
     from .firms import firms
+    from .hyp3 import hyp3
     from .openmeteo import open_meteo
+    from .opendata import earth_search, hansen_gfc, overpass, population_data
     from .planetary import planetary
 
-    return [planetary(), copernicus(), earth_engine(), firms(), earthdata(), open_meteo()]
+    return [planetary(), copernicus(), earth_engine(), firms(), earthdata(), open_meteo(),
+            earth_search(), hansen_gfc(), population_data(), overpass(), hyp3()]
 
 
 def get(source_id: str) -> Source:

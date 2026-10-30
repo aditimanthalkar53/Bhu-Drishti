@@ -4,6 +4,7 @@ import { api, authUrl, post, traceUrl } from "../api";
 import { useAuth } from "../auth";
 import { digitsFor, fmt, fmtInt, fmtSeconds, halfwidthPct, stopReasonLabel, unitFor } from "../format";
 import { AdvisoryView, EvidenceList, InputsList } from "./Evidence";
+import { ChangeImages, type MapOverlay } from "./ChangeImages";
 import type { ExhaustiveReport, QueryIR, ReplayReport } from "../types";
 import type { RunState } from "../useQueryRun";
 import { ConvergenceChart } from "./ConvergenceChart";
@@ -18,7 +19,7 @@ function download(name: string, text: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function ResultPanel({ run }: { run: RunState }) {
+export function ResultPanel({ run, simulated = false, onMapOverlay }: { run: RunState; simulated?: boolean; onMapOverlay?: (o: MapOverlay | null) => void }) {
   const [exhaustive, setExhaustive] = useState<ExhaustiveReport | null>(null);
   const [replay, setReplay] = useState<ReplayReport | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -139,6 +140,8 @@ export function ResultPanel({ run }: { run: RunState }) {
       ) : null}
 
       {run.error && <p className="notice notice-error" role="alert">{run.error}</p>}
+
+      {ir && task !== "inspect" && <ChangeImages ir={ir} simulated={simulated} onMap={onMapOverlay ?? (() => undefined)} />}
 
       {task === "inspect" && e?.answers ? (
         <section className="headline">

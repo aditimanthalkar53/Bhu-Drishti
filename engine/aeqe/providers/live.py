@@ -162,6 +162,16 @@ def builtup_from_stack(b03, b04, b08, b11) -> np.ndarray:
     return m
 
 
+_IO_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("AEQE_IO_THREADS", "32")), thread_name_prefix="aeqe-io")
+
+
+def _par(*fns):
+    """Run independent network reads at once and return their results in order (re-raises the first error).
+    Only call from oracle/worker threads: the pool never submits further work itself, so it cannot deadlock."""
+    futs = [_IO_POOL.submit(f) for f in fns]
+    return [f.result() for f in futs]
+
+
 def _spread(items: list, k: int) -> list:
     """``k`` items evenly spaced in time (deterministic) — enough for a stable median."""
     xs = sorted(items, key=lambda i: (str(i.properties.get("datetime")), i.id))
@@ -232,7 +242,10 @@ class S1FloodChangeOracle(_LiveOracle):
         if not ev:
             return OracleOutput(0.0, {"no_data": True, "reason": "no Sentinel-1 pass covers this tile in the window"})
         pc = self.p.pc
-        e = pc.load(ev, ["vv"], bbox, ORACLE_RES)["vv"]
+        # event and DEM reads are independent (the dry-season reference is cached): fetch them together (WorldCover needs the grid shape, so it follows)
+        dem_items = self.p.static_items("dem", ir.region_id)
+        e, dem = _par(lambda: pc.load(ev, ["vv"], bbox, ORACLE_RES)["vv"],
+                      lambda: pc.dem(bbox, ORACLE_RES, items=dem_items))
         event_db = to_db(e.min("time").values if "time" in e.dims else e.values)
         if ref:
             ref_db = self.p.reference_db(ref, bbox, ORACLE_RES)   # same for every question this season: cached
@@ -240,7 +253,6 @@ class S1FloodChangeOracle(_LiveOracle):
             ref_db = np.full_like(event_db, 0.0)   # no reference: treat as dry (documented caveat)
         shape = event_db.shape
         wc = self.p.worldcover_tile(bbox, shape)
-        dem = pc.dem(bbox, ORACLE_RES, items=self.p.static_items("dem", ir.region_id))
         dem = _fit(dem, shape)
         slope = slope_deg(dem, ORACLE_RES, (bbox[1] + bbox[3]) / 2)
         inside = self._inside(bbox, shape)
@@ -684,7 +696,7 @@ class LiveProvider(Provider):
         feats, names = [], []
         if ir.target == Target.FLOODED_CROPLAND:
             res_o = max(0.002, td / 5)
-            ev = self._window_items("s1_event", ir)
+            ev, ref = _par(lambda: self._window_items("s1_event", ir), lambda: self._window_items("s1_ref", ir))
             report_status(f"Reading a coarse radar overview of {r.name} from {len(ev)} Sentinel-1 pass(es)…")
             e = self.pc.load(ev, ["vv"], r.bbox, res_o)["vv"]
             event_db = to_db(e.min("time").values if "time" in e.dims else e.values)
@@ -692,7 +704,6 @@ class LiveProvider(Provider):
             X, Y = np.meshgrid(xs, ys)
             inside = self.contains(ir.region_id, X, Y)
             thr, thr_method = regional_threshold(event_db[inside & np.isfinite(event_db)])
-            ref = self._window_items("s1_ref", ir)
             if ref:
                 report_status(f"Reading the dry-season reference ({len(ref)} radar passes) to tell floods from normal water…")
                 ref_db = _fit(self.reference_db(ref, r.bbox, res_o), event_db.shape)

@@ -1,6 +1,7 @@
 import "leaflet/dist/leaflet.css";
 import { useEffect, useMemo, useState } from "react";
-import { GeoJSON, MapContainer, useMap } from "react-leaflet";
+import { GeoJSON, ImageOverlay, MapContainer, useMap } from "react-leaflet";
+import type { MapOverlay } from "./ChangeImages";
 import { cssVar, useTheme } from "../theme";
 import { BaseLayers } from "./BaseLayers";
 import { fmt } from "../format";
@@ -15,6 +16,7 @@ interface Props {
   target?: Target;
   unit: string;
   runKey: string;
+  overlay?: MapOverlay | null;
 }
 
 const PROXY_TEXT: Partial<Record<Target, string>> = {
@@ -42,7 +44,7 @@ function isPositive(task: Task | undefined, unit: string, v: number) {
   return v > 0.005;
 }
 
-export function MapView({ region, universe, sampled, confirmedIds, task, target, unit, runKey }: Props) {
+export function MapView({ region, universe, sampled, confirmedIds, task, target, unit, runKey, overlay }: Props) {
   const [showProxy, setShowProxy] = useState(true);
   const [showSamples, setShowSamples] = useState(true);
 
@@ -80,6 +82,7 @@ export function MapView({ region, universe, sampled, confirmedIds, task, target,
       <MapContainer center={[26.4, 91.2]} zoom={10} preferCanvas className="map" zoomControl attributionControl>
         <BaseLayers />
         <FitRegion region={region} />
+        {overlay && <ImageOverlay key={overlay.url} url={overlay.url} bounds={overlay.bounds} opacity={0.95} />}
         {regionFc && (
           <GeoJSON key={`region-${region?.id}-${mode}`} data={regionFc}
             style={{ color: col.outline, weight: 2, fill: false, dashArray: "6 4" }} interactive={false} />

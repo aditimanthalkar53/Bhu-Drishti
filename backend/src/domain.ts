@@ -22,6 +22,14 @@ export interface Threshold {
   value: number;
 }
 
+/** When an alert is not confirmed, or is severe, it moves up the recipients' reports-to chain. */
+export interface Escalation {
+  enabled: boolean;
+  ackMinutes: number;               // unconfirmed this long: tell the next level up
+  severeValue?: number | null;      // at or above this, also tell one level up straight away
+  criticalValue?: number | null;    // at or above this, tell two levels up straight away
+}
+
 export interface Monitor extends StoredRecord {
   name: string;
   aoiId: string;
@@ -31,6 +39,7 @@ export interface Monitor extends StoredRecord {
   threshold?: Threshold | null;
   recipientIds: string[];
   groupIds: string[];
+  escalation?: Escalation | null;
   autoReport: boolean;        // make a report after every run (else only when the threshold fires)
   requireApproval: boolean;   // reports wait for a human before anything is sent
   enabled: boolean;
@@ -54,6 +63,11 @@ export interface Alert extends StoredRecord {
   status: "open" | "acknowledged" | "resolved";
   assignee?: string | null;
   history: { at: string; by: string; action: string; note?: string }[];
+  drill?: boolean;                       // a rehearsal: no satellite analysis was run
+  escalation?: Escalation | null;        // the rule in force when the alert opened
+  lastEscalatedAt?: string | null;
+  notified: { at: string; recipientId: string; name: string; designation: string; level: number; email: string; channel: "email"; status: "sent" | "failed"; error?: string; reason: string }[];
+  confirmedBy?: { recipientId: string; name: string; at: string }[];
 }
 
 export type ReportStatus = "draft" | "pending_approval" | "approved" | "sending" | "sent" | "partially_sent" | "failed";
@@ -80,6 +94,8 @@ export interface Recipient extends StoredRecord {
   department: string;         // e.g. "DDMA", "Agriculture", "SDMA", "Revenue"
   state?: string;
   district?: string;
+  level?: number;             // 1 block/field, 2 district, 3 state, 4 national
+  reportsToId?: string | null;// who they report to: alerts move up this chain
   regionIds: string[];        // areas this person covers (for ?area= lookups)
   email: string;
   phone?: string;
