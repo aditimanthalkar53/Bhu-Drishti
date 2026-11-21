@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { SachetBanner } from "./components/SachetBanner";
 import { useAuth } from "./auth";
 import { api, ApiError, post } from "./api";
 import type { MapOverlay } from "./components/ChangeImages";
@@ -211,6 +212,7 @@ export default function App() {
           </div>
         </div>
         <div className="explore-body" id="panel-ask" role="tabpanel" aria-labelledby="tab-ask" hidden={tab !== "ask"}>
+      <SachetBanner region={region} onAsk={setQuestion} />
       <QueryPanel scope={scope}
         regions={regions} regionId={regionId} onRegion={setRegionId}
         question={question} onQuestion={setQuestion}

@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, post } from "../api";
+import { useAuth } from "../auth";
+import { isHiddenFor } from "../hiddenPages";
+import { exploreUrl, matchDistricts, suggestedQuestion } from "../sachetLink";
+import type { Region } from "../types";
 import { fmtDate } from "../format";
 import { Empty, ErrorNote, Page, Pill, useAction, useData } from "./common";
 
@@ -38,7 +43,11 @@ const CATEGORY: Record<string, string> = {
 const catLabel = (c: string) => CATEGORY[c] ?? c;
 
 export function SachetPage() {
+  const { user } = useAuth();
   const res = useData<SachetResult>("/api/sachet/alerts");
+  // Explore (satellite analysis of an area) is for authorities: only they get the "Explore this area" buttons
+  const canExplore = user?.role === "authority" && !isHiddenFor(user.role, "/app");
+  const regions = useData<Region[]>(canExplore ? "/api/regions" : null);
   const act = useAction();
   const [cat, setCat] = useState("all");
   const data = res.data;
@@ -103,6 +112,7 @@ export function SachetPage() {
               {a.expires && <> · Valid until {when(a.expires)}</>}
               {(a.urgency || a.certainty) && <> · {[a.urgency && `urgency ${a.urgency}`, a.certainty && `certainty ${a.certainty}`].filter(Boolean).join(", ")}</>}
             </p>
+            {canExplore && <ExploreLinks alert={a} regions={regions.data ?? []} loading={regions.loading} />}
             <div className="row-actions">
               <a className="btn btn-small" href={a.link ?? data?.portalUrl} target="_blank" rel="noopener noreferrer">{a.link ? "Official alert" : "Open SACHET"}</a>
               <button className="btn btn-small" disabled={act.busy === a.id}
@@ -114,5 +124,28 @@ export function SachetPage() {
         ))}
       </div>
     </Page>
+  );
+}
+
+/** For an alert: one button per district it names, opening Explore on that district with the question that fits the hazard. */
+function ExploreLinks({ alert, regions, loading }: { alert: SachetAlert; regions: Region[]; loading: boolean }) {
+  const districts = useMemo(() => matchDistricts(alert, regions), [alert, regions]);
+  const q = suggestedQuestion(alert);
+  if (loading && !regions.length) return null;
+  return (
+    <div className="stack explore-links">
+      <p className="small"><strong>See what satellites show for this area:</strong></p>
+      <div className="row-actions">
+        {districts.map((r) => (
+          <Link key={r.id} className="btn btn-small btn-primary btn-inline" to={exploreUrl(r, q)}>Explore {r.name}{r.state ? `, ${r.state}` : ""}</Link>
+        ))}
+        {districts.length === 0 && <Link className="btn btn-small" to="/app">Open Explore and search the place</Link>}
+      </div>
+      <p className="muted small">
+        {districts.length
+          ? q ? `Opens Explore on the district with the question “${q}”. You can change it before you run it.` : "Opens Explore on the district. Ask any question about it there."
+          : "No district name from the list was found in this alert's area text, so search the place in Explore yourself."}
+      </p>
+    </div>
   );
 }
