@@ -65,7 +65,7 @@ export function RequestsPage() {
 
 function Detail({ r, onChange, onClose }: { r: HelpRequest; onChange(): void; onClose(): void }) {
   const act = useAction();
-  const suggest = useData<{ offer: Offer; km: number | null; score: number }[]>(`/api/matches/suggest?requestId=${r.id}`, [r.id]);
+  const suggest = useData<{ offer: Offer; km: number | null; typeFits: boolean; covers: number | null }[]>(`/api/matches/suggest?requestId=${r.id}`, [r.id]);
   const set = (body: Record<string, unknown>) => act.run("triage", async () => { await patch(`/api/requests/${r.id}`, body); onChange(); });
   const lang = r.originalLanguage ? LANGUAGES[r.originalLanguage] ?? r.originalLanguage : null;
   const photos = useMemo(() => [...(r.drain?.photos ?? []), ...(r.drain?.confirmations ?? []).flatMap((c) => c.photos)], [r.drain]);
@@ -87,7 +87,7 @@ function Detail({ r, onChange, onClose }: { r: HelpRequest; onChange(): void; on
         {r.lat != null ? <><a href={`https://maps.google.com/?q=${r.lat},${r.lng}`} target="_blank" rel="noreferrer">{r.lat.toFixed(5)}, {r.lng!.toFixed(5)}</a> (±{r.accuracyM ?? "?"} m)</> : "No location"}
         {r.area ? ` · ${r.area}` : ""}{r.peopleAffected != null ? ` · ${r.peopleAffected} people` : ""}{r.contact ? ` · ${r.contact}` : ""}
       </p>
-      {r.confidence && <p className="muted small">Confidence {Math.round(r.confidence.score * 100)}%: nearby reports {Math.round(r.confidence.factors.corroboration * 100)}%,
+      {r.confidence && <p className="muted small">Confidence {Math.round(r.confidence.score * 100)}% ({r.confidence.method === "learned" ? "weights learned from authorities' past decisions" : "plain average; weights are learned after 30 decisions"}): nearby reports {Math.round(r.confidence.factors.corroboration * 100)}%,
         hazard {r.confidence.factors.hazard == null ? "not loaded" : `${Math.round(r.confidence.factors.hazard * 100)}%`}, reporter history {Math.round(r.confidence.factors.reporter * 100)}%</p>}
       {r.drain && (
         <div className="stack">
@@ -114,7 +114,7 @@ function Detail({ r, onChange, onClose }: { r: HelpRequest; onChange(): void; on
       <ul className="list">
         {suggest.data?.slice(0, 5).map((s) => (
           <li key={s.offer.id} className="row-actions">
-            <span className="small"><strong>{OFFER_LABEL[s.offer.type] ?? s.offer.type}</strong> {s.offer.quantity} {s.offer.unit} · {s.offer.offeredByName}{s.km != null ? ` · ${s.km} km` : ""} · match {Math.round(s.score * 100)}%</span>
+            <span className="small"><strong>{OFFER_LABEL[s.offer.type] ?? s.offer.type}</strong> {s.offer.quantity} {s.offer.unit} · {s.offer.offeredByName}{s.km != null ? ` · ${s.km} km` : ""}{s.typeFits ? "" : " · other type"}{s.covers != null ? ` · covers ${Math.round(s.covers * 100)}%` : ""}</span>
             <button className="btn btn-small" disabled={!!act.busy} onClick={() => void act.run("m", async () => { await post("/api/matches", { requestId: r.id, offerId: s.offer.id }); onChange(); await suggest.reload(); return "Matched; a delivery task was created."; })}>Match</button>
           </li>
         ))}

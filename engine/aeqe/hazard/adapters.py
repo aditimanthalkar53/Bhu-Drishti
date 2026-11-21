@@ -103,7 +103,7 @@ class FirmsAdapter(HazardAdapter):
 
 
 class ImergAdapter(HazardAdapter):
-    id, name, unit, area_level = "imerg", "NASA GPM IMERG rainfall (area mean)", "mm", True
+    id, name, unit, area_level = "imerg", "NASA GPM IMERG rainfall (area mean, wettest day)", "mm/day", True
 
     def configured(self):
         from ..sources.earthdata import earthdata
@@ -115,7 +115,7 @@ class ImergAdapter(HazardAdapter):
         last = max((s["date"] for s in r.get("series", []) if s.get("mm") is not None), default=None)
         obs = f"{last}T23:59:59+00:00" if last else None
         lat = (_now() - datetime.fromisoformat(obs)).total_seconds() if obs else None
-        return self.broadcast(cells, r.get("total_mm"), obs, lat)
+        return self.broadcast(cells, r.get("max_day_mm"), obs, lat)
 
 
 class ModisFloodAdapter(HazardAdapter):
@@ -176,11 +176,11 @@ class GlofasAdapter(_OpenMeteoAdapter):
 
 
 class RainForecastAdapter(_OpenMeteoAdapter):
-    id, name, unit = "rain_forecast", "Rainfall forecast, next 3 days (Open-Meteo)", "mm"
+    id, name, unit = "rain_forecast", "Rainfall forecast, wettest of the next 3 days (Open-Meteo)", "mm/day"
 
     def fetch(self, cells, bbox, start, end):
         pts, outs = self._outlooks(cells)
-        vals = [o.get("rain_forecast_total_mm") for o in outs]
+        vals = [max((d["mm"] for d in o.get("rain_forecast") or [] if d.get("mm") is not None), default=None) for o in outs]
         obs = _now().replace(minute=0, second=0, microsecond=0).isoformat()
         return [HazardCell(c.id, self.id, obs, None, vals[_nearest(pts, *c.center)], self.unit) for c in cells]
 

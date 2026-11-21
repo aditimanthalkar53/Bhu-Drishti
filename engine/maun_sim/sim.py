@@ -72,7 +72,7 @@ def field_check(true_value: float, rng: np.random.Generator) -> float:
 def simulate_run(seed: int, waves=(30, 25, 25, 20), conf: float = 0.95, areas: bool = False, w: World | None = None) -> dict:
     w = w or world(seed, areas=areas)
     rng = np.random.default_rng(seed + 10_000)
-    spec = {"cells": w.cells, "seed": seed + 1, "conf": conf, "waves": [], "results": {}, "looks": 1}
+    spec = {"cells": w.cells, "seed": seed + 1, "conf": conf, "waves": [], "results": {}, "looks": 1, "design_version": 2}
     index = {c["id"]: i for i, c in enumerate(w.cells)}
     history = []
     out = None

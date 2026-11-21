@@ -143,35 +143,83 @@ export const SERVES: Record<RequestType, OfferType[]> = {
   road_blocked: ["labour", "vehicle"], power: ["labour"], drain_or_sewer: ["labour"], waterlogging: ["labour", "boat"], other: [...OFFER_TYPES],
 };
 
-export interface Confidence { score: number; factors: { corroboration: number; hazard: number | null; reporter: number } }
+export interface Confidence {
+  score: number;
+  factors: { corroboration: number; hazard: number | null; reporter: number };
+  /** "learned": logistic regression on authorities' decisions; "unweighted": too few decisions yet, plain average */
+  method: "learned" | "unweighted";
+}
 
-/**
- * How much independent support a request has, 0..1. Used only to sort; low confidence never hides a request.
- *  - corroboration (weight 0.4): other people's open requests within 500 m and 24 h (3 or more = full)
- *  - hazard agreement (0.3): the combined hazard score of the cell, when a hazard layer has been loaded
- *  - reporter history (0.3): (resolved or verified + 1) / (those + cancelled or flagged-accidental + 2)
- * A missing hazard layer drops its weight; the rest is rescaled.
- */
-export function confidenceOf(r: HelpRequest, all: HelpRequest[], hazardAt: (lat: number, lng: number) => number | null): Confidence {
+const NEAR_M = 500, NEAR_MS = 24 * 3600_000;   // what counts as "nearby" for corroboration (a definition, not a weight)
+const r2 = (x: number) => Math.round(x * 100) / 100;
+
+/** The evidence about one request, each on 0..1. */
+export function confidenceFactors(r: HelpRequest, all: HelpRequest[], hazardAt: (lat: number, lng: number) => number | null): Confidence["factors"] {
   let near = 0;
   const t = Date.parse(r.createdAt);
   if (r.lat != null && r.lng != null) {
     const seen = new Set<string>();
     for (const o of all) {
       if (o.id === r.id || o.ownerId === r.ownerId || o.status === "cancelled" || o.lat == null || o.lng == null) continue;
-      if (Math.abs(Date.parse(o.createdAt) - t) > 24 * 3600_000 || seen.has(o.ownerId)) continue;
-      if (haversineM(r.lat, r.lng, o.lat, o.lng) <= 500) { seen.add(o.ownerId); near++; }
+      if (Math.abs(Date.parse(o.createdAt) - t) > NEAR_MS || seen.has(o.ownerId)) continue;
+      if (haversineM(r.lat, r.lng, o.lat, o.lng) <= NEAR_M) { seen.add(o.ownerId); near++; }
     }
   }
-  const corroboration = Math.min(near, 3) / 3;
   const hazard = r.lat != null && r.lng != null ? hazardAt(r.lat, r.lng) : null;
   const mine = all.filter((o) => o.ownerId === r.ownerId && o.id !== r.id);
   const good = mine.filter((o) => o.status === "resolved" || o.status === "verified").length;
   const bad = mine.filter((o) => o.status === "cancelled" || o.flags.includes("possible_accidental")).length;
-  const reporter = (good + 1) / (good + bad + 2);
-  const parts: [number, number][] = [[corroboration, 0.4], [reporter, 0.3]];
-  if (hazard != null) parts.push([Math.max(0, Math.min(1, hazard)), 0.3]);
-  const w = parts.reduce((s, [, x]) => s + x, 0);
-  const score = parts.reduce((s, [v, x]) => s + v * x, 0) / w;
-  return { score: Math.round(score * 100) / 100, factors: { corroboration: Math.round(corroboration * 100) / 100, hazard, reporter: Math.round(reporter * 100) / 100 } };
+  return {
+    corroboration: near / (near + 1),                       // 0 people → 0, 1 → 0.5, 3 → 0.75: no cap to choose
+    hazard: hazard == null ? null : Math.max(0, Math.min(1, hazard)),
+    reporter: (good + 1) / (good + bad + 2),               // Laplace's rule of succession over this reporter's record
+  };
+}
+
+export interface ConfidenceModel { w: number[]; b: number; n: number }
+const featureVec = (f: Confidence["factors"]) => [f.corroboration, f.hazard ?? 0, f.hazard == null ? 0 : 1, f.reporter];
+
+/**
+ * Learn how much each piece of evidence predicts that a request is genuine, from what authorities decided:
+ * verified, assigned, in progress or resolved = genuine; cancelled = not. Logistic regression with a small ridge
+ * penalty. Needs at least 30 decisions with at least 5 of each kind; until then there is no model.
+ */
+export function fitConfidence(all: HelpRequest[], hazardAt: (lat: number, lng: number) => number | null): ConfidenceModel | null {
+  const pos = new Set(["verified", "assigned", "in_progress", "resolved"]);
+  const rows = all.filter((r) => pos.has(r.status) || r.status === "cancelled")
+    .map((r) => ({ x: featureVec(confidenceFactors(r, all, hazardAt)), y: pos.has(r.status) ? 1 : 0 }));
+  const ones = rows.filter((r) => r.y === 1).length;
+  if (rows.length < 30 || ones < 5 || rows.length - ones < 5) return null;
+  const p = rows[0].x.length;
+  let w = new Array(p).fill(0), b = Math.log(ones / (rows.length - ones));
+  const lam = 1.0, lr = 0.5;
+  for (let it = 0; it < 800; it++) {
+    const gw = new Array(p).fill(0);
+    let gb = 0;
+    for (const { x, y } of rows) {
+      const z = b + x.reduce((s, v, k) => s + v * w[k], 0);
+      const e = 1 / (1 + Math.exp(-z)) - y;
+      gb += e;
+      for (let k = 0; k < p; k++) gw[k] += e * x[k];
+    }
+    w = w.map((v, k) => v - lr * (gw[k] / rows.length + (lam * v) / rows.length));
+    b -= lr * (gb / rows.length);
+  }
+  return { w, b, n: rows.length };
+}
+
+/** How much independent support a request has, 0..1. Used only to sort; low confidence never hides a request. */
+export function confidenceOf(r: HelpRequest, all: HelpRequest[], hazardAt: (lat: number, lng: number) => number | null,
+  model: ConfidenceModel | null = null): Confidence {
+  const f = confidenceFactors(r, all, hazardAt);
+  let score: number;
+  if (model) {
+    const z = model.b + featureVec(f).reduce((s, v, k) => s + v * model.w[k], 0);
+    score = 1 / (1 + Math.exp(-z));
+  } else {
+    const parts = [f.corroboration, f.reporter, ...(f.hazard == null ? [] : [f.hazard])];
+    score = parts.reduce((s, v) => s + v, 0) / parts.length;
+  }
+  return { score: r2(score), factors: { corroboration: r2(f.corroboration), hazard: f.hazard == null ? null : r2(f.hazard), reporter: r2(f.reporter) },
+    method: model ? "learned" : "unweighted" };
 }

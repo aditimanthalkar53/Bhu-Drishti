@@ -17,7 +17,7 @@ export interface HelpRequest {
   intake?: { provider: string; confidence: number | null; edited: boolean } | null;
   drain?: { category: string; categorySource: "citizen" | "ai"; photos: string[]; vision: { provider: string; category: string; confidence: number; description: string } | null;
     confirmations: { at: string; photos: string[] }[]; forwarded: { to: string | null; status: string; at: string | null; error?: string | null } } | null;
-  confidence?: { score: number; factors: { corroboration: number; hazard: number | null; reporter: number } };
+  confidence?: { score: number; factors: { corroboration: number; hazard: number | null; reporter: number }; method: "learned" | "unweighted" };
   history: { at: string; action: string }[];
 }
 export interface Offer {
@@ -32,7 +32,17 @@ export interface Task {
 export interface HazardCell { cell_id: string; bbox: [number, number, number, number]; hazard_score: number; layers: Record<string, { value: number | null; norm: number | null; unit: string; observed_at: string | null }> }
 export interface HazardSource { id: string; name: string; state: string; observed_at: string | null; age_s: number | null; latency_s: number | null; note: string; area_level?: boolean; kind?: string }
 export interface HazardGrid { bbox: [number, number, number, number] | null; cells: HazardCell[]; sources: HazardSource[]; score_doc?: string; generated_at?: string }
-export interface SilentZone { id: string; bbox: [number, number, number, number] | null; hazard: number; reported: number; expected_reports: number; reason: string; status: string; action: string }
+export interface SilentZone {
+  id: string; bbox: [number, number, number, number] | null; hazard: number; reported: number; reason: string; status: string; action: string;
+  /** estimated or observed households in need beyond reports */
+  estimated_gap: number | null;
+  /** one-sided test p-value (Benjamini-Hochberg controlled); null for directly observed gaps */
+  p_value: number | null;
+  basis: "observed" | "model" | "stratum" | "reports_stopped";
+}
+export const SILENT_BASIS: Record<SilentZone["basis"], string> = {
+  observed: "Field check", model: "Model (learned from checks)", stratum: "Checks in similar cells", reports_stopped: "Reports stopped",
+};
 
 // ---------------------------------------------------------------------------- labels
 export const REQUEST_LABEL: Record<RequestType, string> = {

@@ -17,6 +17,8 @@ import type { Store, StoredRecord } from "./store/types.js";
 export interface MaunCell {
   id: string; bbox: [number, number, number, number]; area_km2: number; hazard: number; population: number | null;
   reported: number; reported_recent: number; reported_earlier: number; area: string;
+  /** each hazard layer on 0-1, so the model can learn its own weight (design version 2) */
+  layers?: Record<string, number>;
 }
 type Result = { households: number } | { unreachable: true };
 
@@ -39,6 +41,9 @@ export interface MaunRun extends StoredRecord {
   createdBy: string;
   last: Record<string, any> | null;
   history?: { n: number; looks: number; t: number; value: number; lo: number; hi: number }[];
+  /** 1 = runs created before data-driven strata (replayed with their original design); 2 = current */
+  designVersion?: number;
+  regionId?: string | null;
 }
 
 const bus = new EventEmitter();
@@ -87,7 +92,83 @@ export function countReports(cells: { id: string; bbox: [number, number, number,
 }
 
 function specOf(run: MaunRun, newWave = 0) {
-  return { cells: run.cells, seed: run.seed, conf: run.conf, waves: run.waves.map((w) => ({ alloc: w.alloc })), results: run.results, looks: Math.max(1, run.looks), new_wave: newWave };
+  return { cells: run.cells, seed: run.seed, conf: run.conf, waves: run.waves.map((w) => ({ alloc: w.alloc })), results: run.results, looks: Math.max(1, run.looks),
+    new_wave: newWave, design_version: run.designVersion ?? 1 };
+}
+
+type Geo = { type: "Polygon"; coordinates: number[][][] } | { type: "MultiPolygon"; coordinates: number[][][][] };
+
+/** Ray casting on the outer ring minus holes. */
+function inRing(ring: number[][], x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+export function inGeometry(g: Geo, lng: number, lat: number): boolean {
+  const polys = g.type === "Polygon" ? [g.coordinates] : g.coordinates;
+  return polys.some((p) => inRing(p[0], lng, lat) && !p.slice(1).some((hole) => inRing(hole, lng, lat)));
+}
+
+/**
+ * Cells of a run with their covariates, all from data: the hazard layers (each layer separately, plus the combined
+ * score), people per cell from the HRSL 30 m raster, and the requests already reported. A district limits the cells
+ * to those whose centre lies inside its boundary.
+ */
+export async function buildCells(store: Store, engine: EngineClient, o: { bbox?: string | number[]; regionId?: string; cellDeg?: number; useHazard: boolean }) {
+  let bbox: [number, number, number, number] | null = null;
+  let geometry: Geo | null = null;
+  let regionName: string | null = null;
+  if (o.regionId) {
+    const r = await engine.get<{ name: string; bbox: number[]; geometry?: Geo }>(`/regions/${encodeURIComponent(o.regionId)}`);
+    bbox = r.bbox as [number, number, number, number];
+    geometry = r.geometry ?? null;
+    regionName = r.name;
+    if (bbox[2] - bbox[0] > 4 || bbox[3] - bbox[1] > 4) throw Object.assign(new Error("this region is larger than 4° across; draw a smaller area"), { statusCode: 400 });
+  } else {
+    bbox = parseBbox(Array.isArray(o.bbox) ? o.bbox.join(",") : o.bbox);
+    if (!bbox) throw Object.assign(new Error("choose a district, or give bbox=west,south,east,north (at most 2° on a side)"), { statusCode: 400 });
+  }
+  // cell size: as asked, but large enough that the area has at most 1500 cells
+  const span = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]);
+  const cellDeg = Math.max(o.cellDeg ?? 0.025, Math.ceil(Math.sqrt(span / 1500) * 1000) / 1000);
+  const notes: string[] = [];
+  if (regionName) notes.push(`Area: ${regionName} (cells whose centre lies inside the district boundary).`);
+  if (cellDeg !== (o.cellDeg ?? 0.025)) notes.push(`Cell size raised to ${cellDeg}° so the area has at most 1500 cells.`);
+
+  let base = makeGrid(bbox, cellDeg);
+  if (geometry) base = base.filter((c) => { const m = center(c.bbox); return inGeometry(geometry!, m.lng, m.lat); });
+  if (base.length < 12) throw Object.assign(new Error("the area must contain at least 12 cells: use smaller cells"), { statusCode: 400 });
+
+  let grid: HazardGrid | null = null;
+  if (o.useHazard) {
+    try { grid = await fetchGrid(engine, bbox, 3, cellDeg); } catch (e) { notes.push(`Hazard layer unavailable (${(e as Error).message}); the model learns from reports and people only.`); }
+  }
+  const hz = new Map((grid?.cells ?? []).map((c) => [c.cell_id, c]));
+  let pop: Record<string, number> = {};
+  try {
+    const p = await engine.json<{ population: Record<string, number>; missing: string[]; source: string; errors: string[] }>("/maun/population",
+      { method: "POST", body: JSON.stringify({ cells: base.map((c) => ({ id: c.id, bbox: c.bbox })) }) }, 600_000);
+    pop = p.population;
+    notes.push(`Population: ${p.source}${p.missing.length ? `; ${p.missing.length} cell(s) could not be read and use a flat 400 people/km² fallback` : " for every cell"}.`);
+  } catch (e) {
+    notes.push(`Population raster unavailable (${(e as Error).message}); every cell uses a flat 400 people/km² fallback.`);
+  }
+  const counts = countReports(base, await store.listRecords<HelpRequest>("request"));
+  const midLat = (bbox[1] + bbox[3]) / 2, midLng = (bbox[0] + bbox[2]) / 2;
+  const cells: MaunCell[] = base.map((c) => {
+    const ctr = center(c.bbox);
+    const h = hz.get(c.id);
+    const layers: Record<string, number> = {};
+    for (const [k, l] of Object.entries(h?.layers ?? {})) if (l.norm != null) layers[k] = l.norm;
+    return { ...c, hazard: h?.hazard_score ?? 0, layers, population: pop[c.id] ?? null, ...counts.get(c.id)!,
+      area: `${ctr.lat >= midLat ? "North" : "South"}-${ctr.lng >= midLng ? "east" : "west"}` };
+  });
+  notes.push("Reported need counts each request, SOS or Drain Watch report in a cell as one household.");
+  notes.push("How need relates to each hazard layer, people and reports is learned from the field checks, not assumed.");
+  return { bbox, cellDeg, cells, notes, sources: grid?.sources ?? [] };
 }
 
 const summary = (run: MaunRun) => {
@@ -165,36 +246,23 @@ export function maunRoutes(app: FastifyInstance, store: Store, engine: EngineCli
     throw e;
   };
 
-  app.post<{ Body: { name: string; bbox: string | number[]; cellDeg?: number; waveSize?: number; useHazard?: boolean; seed?: number } }>("/api/maun/runs", {
+  app.post<{ Body: { name: string; bbox?: string | number[]; regionId?: string; cellDeg?: number; waveSize?: number; useHazard?: boolean; seed?: number } }>("/api/maun/runs", {
     ...authority,
-    schema: { body: { type: "object", required: ["name", "bbox"], properties: { name: { type: "string", minLength: 2, maxLength: 120 },
-      bbox: { anyOf: [{ type: "string" }, { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 }] },
+    schema: { body: { type: "object", required: ["name"], properties: { name: { type: "string", minLength: 2, maxLength: 120 },
+      bbox: { anyOf: [{ type: "string" }, { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 }] }, regionId: { type: "string", maxLength: 120 },
       cellDeg: { type: "number", minimum: 0.005, maximum: 0.2 }, waveSize: { type: "integer", minimum: 1, maximum: 200 }, useHazard: { type: "boolean" }, seed: { type: "integer" } } } },
   }, async (req, reply) => {
-    const bbox = parseBbox(Array.isArray(req.body.bbox) ? req.body.bbox.join(",") : req.body.bbox);
-    if (!bbox) return reply.code(400).send({ error: "bbox must be west,south,east,north, at most 2 degrees on a side" });
-    const cellDeg = req.body.cellDeg ?? 0.025;
-    const notes: string[] = [];
-    let grid: HazardGrid | null = null;
-    if (req.body.useHazard !== false) {
-      try { grid = await fetchGrid(engine, bbox, 3, cellDeg); } catch (e) { notes.push(`Hazard layer unavailable (${(e as Error).message}); predicted need uses reports only.`); }
+    let built;
+    try {
+      built = await buildCells(store, engine, { bbox: req.body.bbox, regionId: req.body.regionId, cellDeg: req.body.cellDeg, useHazard: req.body.useHazard !== false });
+    } catch (e) {
+      return fail(reply, e);
     }
-    let base;
-    try { base = makeGrid(bbox, cellDeg); } catch (e) { return fail(reply, e); }
-    if (base.length < 12) return reply.code(400).send({ error: "the area must contain at least 12 cells: use smaller cells" });
-    const hz = new Map((grid?.cells ?? []).map((c) => [c.cell_id, c.hazard_score]));
-    const counts = countReports(base, await store.listRecords<HelpRequest>("request"));
-    const midLat = (bbox[1] + bbox[3]) / 2, midLng = (bbox[0] + bbox[2]) / 2;
-    const cells: MaunCell[] = base.map((c) => {
-      const ctr = center(c.bbox);
-      return { ...c, hazard: hz.get(c.id) ?? 0, population: null, ...counts.get(c.id)!,
-        area: `${ctr.lat >= midLat ? "North" : "South"}-${ctr.lng >= midLng ? "east" : "west"}` };
-    });
-    notes.push("Population: placeholder of 400 people per km² (no population map is loaded for this run).");
-    notes.push("Reported need counts each request, SOS or Drain Watch report in a cell as one household.");
+    const { bbox, cellDeg, cells, notes, sources } = built;
     const run: MaunRun = { id: `maun-${randomUUID()}`, ownerId: req.userId!, createdAt: now(), name: req.body.name.trim(), bbox, cellDeg,
       seed: req.body.seed ?? Math.floor(Math.random() * 1e9), conf: 0.95, waveSize: req.body.waveSize ?? 30, cells, waves: [], results: {}, resultMeta: {},
-      looks: 0, hazardSources: grid?.sources ?? [], notes, simulated: false, observationIds: [], createdBy: req.userId!, last: null };
+      looks: 0, hazardSources: sources, notes, simulated: false, observationIds: [], createdBy: req.userId!, last: null, designVersion: 2,
+      regionId: req.body.regionId ?? null };
     try {
       await computeAndStore(store, engine, run, run.waveSize);
     } catch (e) {

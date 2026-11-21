@@ -83,10 +83,13 @@ on every role-guarded request, so removing an authority takes effect immediately
   A report within 30 m of an open one of the same category from the last 7 days becomes a "+1 confirmation".
 - **Requests:**
   - Statuses: new → verified → assigned → in progress → resolved (or cancelled).
-  - Sorting: by severity × confidence. Confidence combines nearby reports from other people, the hazard layer and the
-    reporter's history. Low confidence never hides a request.
-- **Offers and matches:** offers (boat, vehicle, food, water, shelter, medical, labour) are ranked against a request by
-  type, distance and quantity. A match creates a delivery task.
+  - Sorting: by severity × confidence. Confidence comes from three pieces of evidence: nearby reports from other people,
+    the hazard layer and the reporter's history. How much each counts is **learned** by logistic regression from what
+    authorities decided (verified or acted on vs cancelled), once there are 30 such decisions; before that it is a plain
+    average with no weights. Low confidence never hides a request.
+- **Offers and matches:** offers (boat, vehicle, food, water, shelter, medical, labour) are ordered for a request by
+  what matters first, with no weighted score: a resource that serves that kind of request, then the nearest, then the
+  one covering the most people. A match creates a delivery task.
 - **Official updates:** one authority drafts, a **second** approves (the author cannot), then the update is published to
   the Updates feed and emailed to the chosen recipient groups. Every delivery and step is in the audit log. Bulletins are
   coordination messages; official warnings are shown from NDMA SACHET.
@@ -98,14 +101,22 @@ on every role-guarded request, so removing an authority takes effect immediately
   - GloFAS river discharge and the Open-Meteo rain forecast, both labelled as forecasts.
 
   Each source shows when it last observed, its delay after observation, or "not configured". Nothing claims continuous
-  coverage. `hazard_score` per cell is the maximum over available layers of weight × normalised value (documented in
-  `score.py`).
+  coverage. `hazard_score` per cell is the largest of the available layers, all weighted equally, each on a published
+  or scale-free 0–1 scale: MODIS flooded share; FIRMS fire present; wettest day ÷ 115.6 mm (IMD "very heavy rainfall");
+  GloFAS share of the forecast peak above normal flow (see `score.py`). It is used for the map, strata and request
+  ranking only; Maun learns each layer's real effect from field checks.
 - **Sharper observation:** an `ObservationRequest` asks for sharper imagery over chosen cells. We cannot task real
   satellites, so the only adapter is **SIMULATED** (`SimulatedObservationAdapter` in `backend/src/hazard/index.ts`) and
   says so everywhere. A real provider implements the same `ObservationAdapter` interface.
 - **Maun estimates** (`engine/aeqe/maun/`; AEQE's estimators are called, not changed):
-  - **Cells:** the area is split into grid cells, each with a predicted need of reported + households × 0.2 × hazard.
-  - **Strata:** the existing six strata over predicted need.
+  - **Area:** a district (cells are kept inside its boundary) or a map view, split into grid cells.
+  - **Data per cell:** people from the **HRSL 30 m population map** (zonal sums; a cell that cannot be read is flagged
+    and uses a flat fallback), each hazard layer separately, and the reports already received.
+  - **Nothing about need is assumed:** the cross-fitted model learns from the field checks how need relates to each
+    hazard layer, people and reports.
+  - **Strata:** the existing six strata over a design score with no weights (the average percentile rank of
+    households exposed to the hazard and of reports). The design only decides which cells are checked; it cannot bias
+    the estimate.
   - **Selection:** volunteers check randomly chosen cells, allocated by sequential Neyman allocation with a pilot of 3
     per stratum.
   - **Estimate:** the cross-fitted difference estimator (stratified below 30 checks), with alpha spending over looks. The
@@ -113,8 +124,15 @@ on every role-guarded request, so removing an authority takes effect immediately
     per area.
   - **Unreachable cells** are never swapped for easier ones. They stay in the sample, the range is widened to cover
     both no need and every household in need there, and they are flagged and sent for sharper observation.
-  - **Silent zones** are cells with high hazard but far fewer reports than expected, or where reports stopped after a
-    burst.
+  - **Reporting rate** is learned: reports ÷ measured need over the checked cells, with a 95% interval, overall and per
+    stratum.
+  - **Silent zones** come from data, not thresholds:
+    - checked cells where the field check found more need than was reported;
+    - other cells where need is significantly above reports: a one-sided test per cell using the learned model and its
+      residual spread (or, before 30 checks, the measured gap in similar checked cells), with false discoveries held at
+      10% (Benjamini-Hochberg);
+    - cells where reports stopped: a Poisson test of no reports in the last 24 h given the 48 h before.
+    Before any check, nothing is flagged on hazard alone.
   - **Storage:** the run (cells, seed, each wave's allocation, results) is stored in the backend and the engine replays
     it deterministically, so restarts lose nothing.
   - **Live updates:** the estimate updates live over Server-Sent Events.
@@ -162,8 +180,8 @@ In the default `full` edition all of these stay visible, next to the coordinatio
 - Web only, and it needs connectivity.
 - Hazard freshness varies by source, and forecasts are not observations.
 - The sharper-observation adapter is simulated.
-- The Maun range covers sampling error only, and population is a documented placeholder (400 people/km²) unless a
-  population map is added.
+- The Maun range covers sampling error only. Population comes from the HRSL map (2018–2020 inputs), which is not
+  validated against a census here.
 - Browser speech recognition depends on the browser and language.
 
 **Future work (not built):** offline/PWA, SMS gateway, phone-to-phone relay, real satellite tasking, face/plate blurring,

@@ -13,26 +13,35 @@ from ..sources.base import SourceError, redact
 from .adapters import ADAPTERS, HazardAdapter, HazardCell, LayerResult
 from .grid import make_grid
 
-# layer -> (weight, value that counts as "full" hazard)
-WEIGHTS: dict[str, float] = {"modis_flood": 1.0, "firms": 1.0, "imerg": 0.8, "glofas": 0.8, "rain_forecast": 0.6}
-FULL: dict[str, float] = {"modis_flood": 0.2, "firms": 3.0, "imerg": 150.0, "rain_forecast": 150.0}
+# No tuned weights: every layer counts equally, and each is put on 0-1 by a published reference or a scale-free form.
+# The display score is only used to draw the map, build Maun's strata and rank requests; Maun's estimate learns from
+# field checks how much each layer actually matters (each layer is a separate covariate of its proxy model).
+IMD_VERY_HEAVY_MM = 115.6     # India Meteorological Department: "very heavy rainfall" starts at 115.6 mm in 24 h
+WEIGHTS: dict[str, float] = {"modis_flood": 1.0, "firms": 1.0, "imerg": 1.0, "glofas": 1.0, "rain_forecast": 1.0}
 
 SCORE_DOC = (
-    "hazard_score = max over available layers of weight x normalised value, so one strong signal is enough and a missing "
-    "layer never lowers the score. Normalised (0-1): MODIS flood share / 0.2; FIRMS detections in the cell / 3; IMERG "
-    "rainfall total / 150 mm; rain forecast / 150 mm; GloFAS (peak forecast discharge / last-7-day mean - 1) / 2. "
-    "Weights: MODIS flood 1.0, FIRMS 1.0, IMERG 0.8, GloFAS 0.8, rain forecast 0.6. Area-level layers (IMERG, MODIS) give "
-    "every cell the same value. Forecast layers are model forecasts, not observations."
+    "hazard_score = the largest of the available layers, each on 0-1, all weighted equally, so one strong signal is "
+    "enough and a missing layer never lowers the score. Layers: MODIS flood = the share of observed land flooded (a "
+    "fraction already); FIRMS = 1 if the cell has an active-fire detection; IMERG and the rain forecast = wettest day "
+    "÷ 115.6 mm (IMD's 'very heavy rainfall' threshold); GloFAS = 1 − (normal flow ÷ forecast peak), the share of the "
+    "peak that is above the last 7 days' mean. Area-level layers (IMERG, MODIS) give every cell the same value. Forecast "
+    "layers are model forecasts, not observations. Maun does not use these scales for its estimate: it learns each "
+    "layer's effect from the field checks."
 )
 
 
 def normalise(source: str, value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
+    if source == "firms":
+        return 1.0 if value >= 1 else 0.0
+    if source == "modis_flood":
+        return max(0.0, min(1.0, value))
+    if source in ("imerg", "rain_forecast"):
+        return max(0.0, min(1.0, value / IMD_VERY_HEAVY_MM))
     if source == "glofas":
-        return max(0.0, min(1.0, (value - 1.0) / 2.0))
-    full = FULL.get(source)
-    return None if not full else max(0.0, min(1.0, value / full))
+        return max(0.0, min(1.0, 1.0 - 1.0 / value)) if value > 0 else 0.0
+    return None
 
 
 def combine(layers: dict[str, dict[str, HazardCell]], cell_ids: list[str]) -> dict[str, float]:
@@ -43,7 +52,7 @@ def combine(layers: dict[str, dict[str, HazardCell]], cell_ids: list[str]) -> di
             hc = cells.get(cid)
             n = normalise(src, hc.value) if hc else None
             if n is not None:
-                best = max(best, WEIGHTS.get(src, 0.5) * n)
+                best = max(best, WEIGHTS.get(src, 1.0) * n)
         out[cid] = round(best, 4)
     return out
 

@@ -28,6 +28,7 @@ GET  /detections/{id}                progress steps, then the result (areas, pol
 GET  /detections/{id}/overlays/{f}   PNG map overlay (before / after / change)
 DELETE /detections/{id}              remove a finished analysis and its files
 POST /hazard/grid                    combined hazard layer (FIRMS, IMERG, MODIS flood, GloFAS, rain forecast) per grid cell
+POST /maun/population                people per grid cell from the HRSL 30 m population raster
 POST /maun/compute                   Maun need estimate from a stored run record (deterministic replay)
 """
 
@@ -543,6 +544,23 @@ def hazard_grid(req: HazardRequest):
     try:
         return grid(req.bbox, req.cell_deg, max(1, min(req.days, 7)))
     except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+class CellsRequest(BaseModel):
+    cells: list[dict[str, Any]]
+
+
+@app.post("/maun/population")
+def maun_population(req: CellsRequest):
+    """People per cell from the HRSL 30 m raster (zonal sums); cells that could not be read are listed as missing."""
+    from .maun.population import cell_population
+
+    if not req.cells or len(req.cells) > 2500:
+        raise HTTPException(422, "send 1-2500 cells, each with id and bbox [west, south, east, north]")
+    try:
+        return cell_population([{"id": str(c["id"]), "bbox": [float(v) for v in c["bbox"]]} for c in req.cells])
+    except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(422, str(e)) from e
 
 

@@ -6,7 +6,7 @@ import { after, before, test } from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { loadConfig, parseWardEmails } from "../src/config.js";
-import { confidenceOf, type HelpRequest } from "../src/disaster.js";
+import { confidenceOf, fitConfidence, type HelpRequest } from "../src/disaster.js";
 import { isHidden } from "../src/featureFlags.js";
 import { cleanImage, sniffImage, stripJpeg, stripPng } from "../src/images.js";
 import { runIntake, validateIntake } from "../src/intake.js";
@@ -22,10 +22,20 @@ async function fakeEngine(): Promise<FastifyInstance> {
   f.get("/health", async () => ({ ok: true }));
   f.post("/hazard/grid", async (req: any) => ({
     bbox: req.body.bbox, cell_deg: req.body.cell_deg, generated_at: "2026-11-21T00:00:00Z", score_doc: "max of weighted layers",
-    cells: makeGrid(req.body.bbox, req.body.cell_deg).map((c, i) => ({ cell_id: c.id, bbox: c.bbox, hazard_score: i % 2 ? 0.8 : 0.1, layers: {} })),
+    cells: makeGrid(req.body.bbox, req.body.cell_deg).map((c, i) => ({ cell_id: c.id, bbox: c.bbox, hazard_score: i % 2 ? 0.8 : 0.1,
+      layers: { glofas: { value: 5, norm: i % 2 ? 0.8 : 0.1, unit: "ratio", observed_at: null }, firms: { value: 0, norm: null, unit: "detections", observed_at: null } } })),
     sources: [{ id: "firms", name: "FIRMS", state: "ok", observed_at: "2026-11-20T10:00:00Z", age_s: 3600, latency_s: 10800, note: "" },
       { id: "imerg", name: "IMERG", state: "not_configured", observed_at: null, age_s: null, latency_s: null, note: "EARTHDATA_TOKEN missing" }],
   }));
+  f.post("/maun/population", async (req: any) => {
+    const cells = req.body.cells as { id: string }[];
+    return { population: Object.fromEntries(cells.slice(1).map((c, i) => [c.id, 1000 + i])), missing: [cells[0].id], source: "HRSL (fake)", errors: [] };
+  });
+  // a triangle-ish district covering the west half of the box
+  f.get("/regions/:id", async (req: any, reply) => req.params.id === "in-test-district"
+    ? { id: "in-test-district", name: "Test district", kind: "district", bbox: [90.9, 26.2, 91.1, 26.4],
+        geometry: { type: "Polygon", coordinates: [[[90.9, 26.2], [91.0, 26.2], [91.0, 26.4], [90.9, 26.4], [90.9, 26.2]]] } }
+    : reply.code(404).send({ detail: "no region" }));
   f.post("/maun/compute", async (req: any) => {
     const s = req.body;
     computeCalls.push(s);
@@ -304,6 +314,11 @@ test("Maun run: cells get reports and hazard, field-check tasks are created, res
   const id = run.json().id;
   assert.equal(run.json().cellCount, 16);
   assert.ok(computeCalls[0].cells.some((c: any) => c.hazard === 0.8), "hazard from the hazard layer");
+  assert.equal(computeCalls[0].design_version, 2, "new runs use data-driven strata");
+  assert.deepEqual(computeCalls[0].cells[1].layers, { glofas: 0.8 }, "each hazard layer goes to the model separately (no data: left out)");
+  assert.equal(computeCalls[0].cells[0].population, null, "a cell the raster could not read is marked, not guessed");
+  assert.equal(computeCalls[0].cells[1].population, 1000);
+  assert.ok(run.json().notes.some((n: string) => n.includes("HRSL (fake)") && n.includes("1 cell(s) could not be read")));
   assert.ok(computeCalls[0].cells.some((c: any) => c.reported > 0), "existing requests are counted per cell");
   const tasks = (await app.inject({ url: `/api/tasks?runId=${id}`, headers: vol.h })).json();
   assert.equal(tasks.length, 3);
@@ -328,6 +343,13 @@ test("Maun run: cells get reports and hazard, field-check tasks are created, res
   const sz = (await app.inject({ url: "/api/maun/silent-zones", headers: boss })).json();
   assert.equal(sz.zones.length, 1);
   assert.equal((await app.inject({ url: "/api/maun/runs", headers: vol.h })).statusCode, 403);
+  // a district: only cells whose centre lies inside its boundary
+  const d = await app.inject({ method: "POST", url: "/api/maun/runs", headers: boss, payload: { name: "District run", regionId: "in-test-district", cellDeg: 0.025, waveSize: 3 } });
+  assert.equal(d.statusCode, 201, d.body);
+  const dc = computeCalls.at(-1).cells as { bbox: number[] }[];
+  assert.equal(dc.length, 32, "4 of 8 columns × 8 rows lie in the district");
+  assert.ok(dc.every((c) => (c.bbox[0] + c.bbox[2]) / 2 < 91.0));
+  assert.equal((await app.inject({ method: "POST", url: "/api/maun/runs", headers: boss, payload: { name: "Nowhere" } })).statusCode, 400);
   const w2 = await app.inject({ method: "POST", url: `/api/maun/runs/${id}/waves`, headers: boss, payload: { size: 3 } });
   assert.equal(w2.statusCode, 200);
   assert.equal((await app.inject({ url: `/api/tasks?runId=${id}&status=open`, headers: boss })).json().length, 3);
@@ -345,4 +367,19 @@ test("helpers: ward emails, grid ids match the engine, report counting, confiden
   const conf = confidenceOf(reqs[0], reqs, () => 0.9);
   assert.ok(conf.score > 0 && conf.score <= 1 && conf.factors.corroboration === 0, "the other report is 29 h away: no corroboration");
   assert.equal(confidenceOf(reqs[0], [...reqs, mk("d", "u4", 26.0102, 2)], () => null).factors.hazard, null);
+  assert.equal(conf.method, "unweighted", "too few authority decisions to learn from");
+});
+
+test("request confidence is learned from authorities' decisions once there are enough", () => {
+  // authorities verified requests where the hazard layer showed danger and cancelled those where it did not
+  const mk = (i: number, status: string, lat: number) => ({ id: `r${i}`, ownerId: `u${i}`, lat, lng: 90 + i * 0.01, status, flags: [],
+    createdAt: new Date(Date.now() - i * 3 * 86400_000).toISOString() }) as unknown as HelpRequest;
+  const hazardAt = (lat: number) => (lat > 26.5 ? 0.9 : 0.1);
+  const all = [...Array.from({ length: 20 }, (_, i) => mk(i, "verified", 26.8)), ...Array.from({ length: 20 }, (_, i) => mk(100 + i, "cancelled", 26.2))];
+  assert.equal(fitConfidence(all.slice(0, 25), hazardAt), null, "fewer than 5 of one kind: no model");
+  const model = fitConfidence(all, hazardAt);
+  assert.ok(model && model.n === 40);
+  const hi = confidenceOf(mk(500, "new", 26.8), all, hazardAt, model), lo = confidenceOf(mk(501, "new", 26.2), all, hazardAt, model);
+  assert.equal(hi.method, "learned");
+  assert.ok(hi.score > lo.score + 0.2, `the learned model trusts hazard agreement (${hi.score} vs ${lo.score})`);
 });

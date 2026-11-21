@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { audit, logDelivery, notify, reportRecipients } from "./delivery.js";
-import { confidenceOf, haversineM, notifyAuthorities, now, OFFER_TYPES, REQUEST_STATUSES, REQUEST_TYPES, SERVES, validLatLng,
+import { confidenceOf, fitConfidence, haversineM, notifyAuthorities, now, OFFER_TYPES, REQUEST_STATUSES, REQUEST_TYPES, SERVES, validLatLng,
   type HelpRequest, type Match, type Offer, type OfficialUpdate, type RequestSource, type RequestType, type Task } from "./disaster.js";
 import type { Report } from "./domain.js";
 import { sendMail, smtpConfigured } from "./email.js";
@@ -44,7 +44,7 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
     return r;
   }
 
-  const withConfidence = (r: HelpRequest, all: HelpRequest[]) => ({ ...r, confidence: confidenceOf(r, all, hazardAt) });
+  const withConfidence = (r: HelpRequest, all: HelpRequest[], model = fitConfidence(all, hazardAt)) => ({ ...r, confidence: confidenceOf(r, all, hazardAt, model) });
 
   // ------------------------------------------------------------------ requests (ask for help, SOS)
   app.post<{ Body: Partial<HelpRequest> & { clientId?: string } }>("/api/requests", {
@@ -114,7 +114,8 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
     let list = own ? all.filter((r) => r.ownerId === req.userId) : all;
     if (req.query.status) list = list.filter((r) => r.status === req.query.status);
     if (req.query.source) list = list.filter((r) => r.source === req.query.source);
-    const out = list.map((r) => withConfidence(r, all));
+    const model = fitConfidence(all, hazardAt);       // learned once per listing from the authorities' decisions
+    const out = list.map((r) => withConfidence(r, all, model));
     if (req.query.sort === "priority") out.sort((a, b) => b.severity * b.confidence.score - a.severity * a.confidence.score || b.createdAt.localeCompare(a.createdAt));
     else out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return out;
@@ -204,13 +205,13 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
   });
 
   // ------------------------------------------------------------------ matching offers to requests
+  // No weighted score: offers are ordered by what matters first: a resource that serves this kind of request, then the
+  // nearest, then the one that covers the most people. Unknown distance sorts after known distances.
   const rankOffers = (r: HelpRequest, offers: Offer[]) => offers.filter((o) => o.status === "available").map((o) => {
-    const typeFit = SERVES[r.type].includes(o.type) ? 1 : 0.2;
     const km = r.lat != null && o.lat != null ? haversineM(r.lat, r.lng!, o.lat, o.lng!) / 1000 : null;
-    const near = km == null ? 0.3 : Math.exp(-km / 5);
-    const qty = r.peopleAffected ? Math.min(1, o.quantity / r.peopleAffected) : 0.5;
-    return { offer: o, km: km == null ? null : Math.round(km * 10) / 10, score: Math.round((0.5 * typeFit + 0.35 * near + 0.15 * qty) * 100) / 100 };
-  }).sort((a, b) => b.score - a.score);
+    return { offer: o, km: km == null ? null : Math.round(km * 10) / 10, typeFits: SERVES[r.type].includes(o.type),
+      covers: r.peopleAffected ? Math.min(1, o.quantity / r.peopleAffected) : null, score: null as number | null };
+  }).sort((a, b) => Number(b.typeFits) - Number(a.typeFits) || (a.km ?? Infinity) - (b.km ?? Infinity) || (b.covers ?? 0) - (a.covers ?? 0));
 
   app.get<{ Querystring: { requestId: string } }>("/api/matches/suggest", authority, async (req, reply) => {
     const r = await store.getRecord<HelpRequest>("request", req.query.requestId ?? "");

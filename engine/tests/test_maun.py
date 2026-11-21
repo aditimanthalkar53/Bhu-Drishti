@@ -19,7 +19,7 @@ from maun_sim import coverage, simulate_run, world
 
 def _spec(seed=3, **kw):
     w = world(seed, areas=False)
-    return w, {"cells": w.cells, "seed": seed, "conf": 0.95, "waves": [], "results": {}, "looks": 1, **kw}
+    return w, {"cells": w.cells, "seed": seed, "conf": 0.95, "waves": [], "results": {}, "looks": 1, "design_version": 2, **kw}
 
 
 def _fill(w, spec, out, value=None):
@@ -92,12 +92,52 @@ def test_bad_specs_are_rejected():
         compute({**spec, "waves": [{"alloc": [1, 2]}]})
 
 
-def test_silent_zones_flag_high_hazard_with_few_reports():
-    cells = [{"id": f"c{i}", "hazard": 0.9 if i < 3 else 0.1, "population": 4500, "reported": 0} for i in range(20)]
-    cells[19] |= {"reported_earlier": 5, "reported_recent": 0}
-    out = compute({"cells": cells, "seed": 1})
+def test_silent_zones_come_from_data_not_thresholds():
+    # before any check nothing is flagged on hazard alone, however high it is
+    cells = [{"id": f"c{i}", "hazard": 0.95 if i < 20 else 0.05, "population": 4900 * (1 + i % 5), "reported": 0} for i in range(60)]
+    cells[59] |= {"reported_earlier": 8, "reported_recent": 0}       # P(0 in 24 h | 4 expected) = e^-4: significant
+    cells[58] |= {"reported_earlier": 2, "reported_recent": 0}       # P = e^-1 = 0.37: not significant
+    out = compute({"cells": cells, "seed": 1, "design_version": 2})
     ids = {z["id"] for z in out["silent_zones"]}
-    assert {"c0", "c1", "c2", "c19"} <= ids and "c5" not in ids
+    assert ids == {"c59"}, ids
+    assert out["silent_zones"][0]["basis"] == "reports_stopped"
+    # after checks: where checked cells show need well above reports, the unchecked cells of that stratum are flagged
+    spec = {"cells": cells, "seed": 1, "design_version": 2, "waves": [], "results": {}, "looks": 1}
+    o = compute({**spec, "new_wave": 18})
+    spec["waves"].append({"alloc": o["new_wave"]["alloc"]})
+    idx = {c["id"]: i for i, c in enumerate(cells)}
+    for cid in o["new_wave"]["cells"]:
+        spec["results"][cid] = {"households": 30 + (idx[cid] % 3) if idx[cid] < 20 else 0}
+    res = compute(spec)
+    flagged = {z["id"]: z for z in res["silent_zones"]}
+    observed = [cid for cid in o["new_wave"]["cells"] if idx[cid] < 20]
+    assert observed and all(flagged[cid]["basis"] == "observed" for cid in observed)
+    assert any(z["basis"] == "stratum" for z in flagged.values()), "unchecked look-alikes are flagged by a test"
+    assert all(idx[cid] < 20 or z["basis"] == "reports_stopped" for cid, z in flagged.items()), "no flags where checks found nothing"
+    assert res["reporting_rate"]["rate"] == 0.0
+
+
+def test_reporting_rate_is_learned_from_checks():
+    from aeqe.maun import reporting_rate
+    r = reporting_rate(np.array([3.0, 5, 2, 4]), np.array([10.0, 20, 10, 10]))
+    assert r["rate"] == pytest.approx(14 / 50) and r["lo"] <= r["rate"] <= r["hi"]
+    assert reporting_rate(np.array([1.0]), np.array([2.0])) is None
+
+
+def test_benjamini_hochberg():
+    from aeqe.maun import benjamini_hochberg
+    assert benjamini_hochberg([0.001, 0.2, 0.03, 0.04], q=0.1) == [True, False, True, True]
+    assert benjamini_hochberg([0.5, 0.6]) == [False, False]
+
+
+def test_legacy_runs_replay_unchanged():
+    """Runs stored before design version 2 must rebuild the same strata (their stored allocations depend on it)."""
+    w, spec = _spec()
+    legacy = {**spec, "design_version": 1}
+    a = compute({**legacy, "new_wave": 30})
+    b = compute({**legacy, "new_wave": 30})
+    assert a["new_wave"] == b["new_wave"]
+    assert a["trace"][0]["design_score"] == "legacy proxy (v1)"
 
 
 def test_field_check_oracle_only_reads_recorded_results():
@@ -146,10 +186,13 @@ def test_grid_ids_and_limits():
         make_grid((0, 0, 10, 10), 0.01)
 
 
-def test_score_is_weighted_max_of_available_layers():
-    assert normalise("firms", 6) == 1.0 and normalise("glofas", 2.0) == 0.5 and normalise("imerg", None) is None
-    layers = {"firms": {"a": HazardCell("a", "firms", None, None, 3.0, "")}, "rain_forecast": {"a": HazardCell("a", "rain_forecast", None, None, 150, "")}}
-    assert combine(layers, ["a", "b"]) == {"a": 1.0, "b": 0.0}
+def test_score_is_the_largest_layer_on_published_scales():
+    assert normalise("firms", 6) == 1.0 and normalise("firms", 0) == 0.0 and normalise("imerg", None) is None
+    assert normalise("glofas", 2.0) == 0.5 and normalise("glofas", 0.8) == 0.0, "share of the peak above normal flow"
+    assert normalise("imerg", 115.6) == 1.0 and normalise("rain_forecast", 57.8) == pytest.approx(0.5), "IMD very heavy rainfall"
+    assert normalise("modis_flood", 0.3) == 0.3
+    layers = {"glofas": {"a": HazardCell("a", "glofas", None, None, 4.0, "")}, "rain_forecast": {"a": HazardCell("a", "rain_forecast", None, None, 57.8, "")}}
+    assert combine(layers, ["a", "b"]) == {"a": 0.75, "b": 0.0}, "the largest layer, equal weights"
 
 
 def test_hazard_grid_reports_each_source_state():
@@ -164,4 +207,4 @@ def test_hazard_grid_reports_each_source_state():
     assert st["modis_flood"]["state"] == "timeout"
     cell = next(c for c in g["cells"] if c["cell_id"] == "c000_000")
     assert cell["hazard_score"] == 1.0 and "firms" in cell["layers"]
-    assert "weighted" in g["score_doc"] or "weight" in g["score_doc"]
+    assert "equally" in g["score_doc"]

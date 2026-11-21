@@ -107,17 +107,30 @@ try {
   let seed = 7;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
   const flood = (lat: number, lng: number) => Math.max(0, Math.min(1, 1.1 * Math.exp(-Math.abs(lng - (91.0 + 0.03 * Math.sin((lat - 26.25) * 20))) * 111 / 5) + (rnd() - 0.5) * 0.12));
+  // real people per cell (HRSL 30 m raster) when the engine can read it
+  let pop: Record<string, number> = {};
+  let popNote = "Population: HRSL raster unavailable, flat 400 people/km² fallback.";
+  try {
+    const p = await engine.json<{ population: Record<string, number>; missing: string[]; source: string }>("/maun/population",
+      { method: "POST", body: JSON.stringify({ cells: base.map((c) => ({ id: c.id, bbox: c.bbox })) }) }, 600_000);
+    pop = p.population;
+    popNote = `Population: ${p.source} (real data)${p.missing.length ? `; ${p.missing.length} cell(s) use the flat fallback` : ""}.`;
+  } catch { /* keep the fallback note */ }
   const cells: MaunCell[] = base.map((c) => {
     const lat = (c.bbox[1] + c.bbox[3]) / 2, lng = (c.bbox[0] + c.bbox[2]) / 2;
-    return { ...c, hazard: Math.round(flood(lat, lng) * 1000) / 1000, population: null, ...counts.get(c.id)!, area: `${lat >= 26.4 ? "North" : "South"}-${lng >= 91.0 ? "east" : "west"}` };
+    const hz = Math.round(flood(lat, lng) * 1000) / 1000;
+    return { ...c, hazard: hz, layers: { simulated_flood: hz }, population: pop[c.id] ?? null, ...counts.get(c.id)!,
+      area: `${lat >= 26.4 ? "North" : "South"}-${lng >= 91.0 ? "east" : "west"}` };
   });
   const run: MaunRun = { id: `maun-demo-${Date.now().toString(36)}`, ownerId: a1.id, createdAt: new Date().toISOString(), name: "Barpeta demo (SIMULATED)", bbox: BBOX, cellDeg,
     seed: 2026, conf: 0.95, waveSize: 30, cells, waves: [], results: {}, resultMeta: {}, looks: 0, hazardSources: [], simulated: true, observationIds: [], createdBy: a1.id, last: null,
+    designVersion: 2, regionId: null,
     notes: ["SIMULATED: hazard scores come from a generated flood field, and the first wave's field checks are simulated counts. Nothing here describes a real event.",
-      "Population: placeholder of 400 people per km².", "Reported need counts each demo request in a cell as one household."] };
+      popNote, "Reported need counts each demo request in a cell as one household.",
+      "How need relates to hazard, people and reports is learned from the field checks, not assumed."] };
   await computeAndStore(store, engine, run, run.waveSize);
   await createTasks(store, run, run.waves[0].cells, a1.id);
-  const hh = (c: MaunCell) => (400 * c.area_km2) / 4.5;
+  const hh = (c: MaunCell) => (c.population ?? 400 * c.area_km2) / 4.9;
   const wave1 = run.waves[0].cells;
   for (const [i, cid] of wave1.entries()) {
     const c = cells.find((x) => x.id === cid)!;
