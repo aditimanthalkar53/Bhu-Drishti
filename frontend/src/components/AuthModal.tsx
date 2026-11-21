@@ -53,7 +53,7 @@ export function AuthModal({ onClose, dismissible = true, initialTab = "login" }:
     setBusy(true);
     try {
       if (tab === "login") await login(email, password);
-      else await register(email, password, name, DISASTER ? { role, ward: ward.trim(), phone: phone.trim(), language } : {});
+      else await register(email, password, name, { role, ward: ward.trim(), phone: phone.trim(), language });
       onClose();
     } catch {
       // error is set in the auth context
@@ -71,7 +71,7 @@ export function AuthModal({ onClose, dismissible = true, initialTab = "login" }:
           <h2 className="modal-title">{tab === "login" ? `Sign in to ${PRODUCT}` : "Create your account"}</h2>
           <p className="muted small">{DISASTER
             ? (tab === "login" ? "Use the email and password you signed up with." : "Ask for help, offer help and get official updates. Authority accounts are set up by the administrator.")
-            : (tab === "login" ? "Use your work email and password." : "Your areas, monitors and reports are saved to your account.")}</p>
+            : (tab === "login" ? "Use your work email and password." : "Your areas, monitors, reports and requests are saved to your account. Authority access is set up by the administrator.")}</p>
         </div>
 
         <div className="modal-tabs" role="tablist">
@@ -103,7 +103,7 @@ export function AuthModal({ onClose, dismissible = true, initialTab = "login" }:
               <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required maxLength={200} />
             </label>
           )}
-          {tab === "register" && DISASTER && (
+          {tab === "register" && (
             <>
               <fieldset className="field fieldset">
                 <span>I am joining as</span>

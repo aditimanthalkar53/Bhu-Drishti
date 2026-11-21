@@ -82,6 +82,7 @@ function SatelliteLanding() {
           <a href="#capabilities">Capabilities</a>
           <a href="#how-it-works">How it works</a>
           <a href="#honesty">Uncertainty</a>
+          <a href="#coordination">Disaster coordination</a>
         </div>
         <div className="lx-nav-actions">
           <ThemeToggle />
@@ -189,6 +190,23 @@ function SatelliteLanding() {
           <div className="lx-glass"><h3>Live data, labelled</h3><p>Real districts use live satellite data and every result lists the scenes it used. Two demo districts with known ground truth stay available, clearly marked "simulated", so the engine's claims can be checked.</p></div>
           <div className="lx-glass"><h3>Reproducible traces</h3><p>Every run records the random seed, sample ledger, oracle outputs, and stopping reason. Replay reproduces the same estimate bit-for-bit from the cache.</p></div>
           <div className="lx-glass"><h3>Not a proof of violation</h3><p>Satellite observations alone cannot establish criminal conduct, regulatory violations, or individual wrongdoing. Results are screening outputs for human review, not legal evidence.</p></div>
+        </div>
+      </section>
+
+      {/* ---------- disaster coordination (Maun) ---------- */}
+      <section className="lx-section" id="coordination">
+        <div className="lx-head" data-reveal>
+          <p className="eyebrow">Disaster coordination · Maun</p>
+          <h2 className="lx-h2">Citizens ask. Volunteers act.<br /><span className="lx-grad">Authorities coordinate.</span></h2>
+          <p className="lx-sub">Requests, offers of help and official updates in one place, and an honest estimate of the need nobody
+            reported, so volunteers and satellite observation reach the quiet areas first.</p>
+        </div>
+        <div className="lx-bento" data-stagger>
+          {ROLES.map((r) => (
+            <article key={r.title} className={`lx-tile ${r.wide ? "lx-tile-wide" : ""}`}>
+              <span className="lx-tile-icon">{r.icon}</span><h3>{r.title}</h3><p>{r.body}</p><span className="lx-tag">{r.tag}</span>
+            </article>
+          ))}
         </div>
       </section>
 

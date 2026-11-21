@@ -76,9 +76,9 @@ const I = {
   data: NAV.find((n) => n.to === "/app/data")!.icon,
 };
 const CIT: Role[] = ["citizen"], VOL: Role[] = ["volunteer"], AUTH: Role[] = ["authority"], PEOPLE: Role[] = ["citizen", "volunteer"];
-/** Disaster edition: one list, each item for the roles that see it (the server enforces the same rules). */
+/** Coordination pages, each for the roles that see it (the server enforces the same rules). */
 const DNAV: NavItem[] = [
-  { to: "/app/dashboard", label: "Command view", icon: I.cmd, group: "Coordinate", roles: AUTH },
+  { to: DISASTER ? "/app/dashboard" : "/app/command", label: "Command view", icon: I.cmd, group: "Coordinate", roles: AUTH },
   { to: "/app/requests", label: "Requests", icon: I.list, group: "Coordinate", roles: AUTH },
   { to: "/app/offers", label: "Offers", icon: I.gift, group: "Coordinate", roles: AUTH },
   { to: "/app/tasks", label: "Tasks", icon: I.check, group: "Coordinate", roles: [...AUTH, ...VOL] },
@@ -97,10 +97,16 @@ const DNAV: NavItem[] = [
   { to: "/app/audit", label: "Audit log", icon: I.audit, group: "Records", roles: AUTH },
   { to: "/app/data", label: "Data sources", icon: I.data, group: "Records", roles: AUTH },
 ];
-const navFor = (role: Role | undefined): NavItem[] =>
-  DISASTER ? DNAV.filter((n) => !n.roles || n.roles.includes(role ?? "citizen")) : NAV;
+/** Full edition: every original page, then the coordination pages for this role (no duplicates).
+ *  Disaster edition: the coordination pages only. */
+function navFor(role: Role | undefined): NavItem[] {
+  const mine = DNAV.filter((n) => !n.roles || n.roles.includes(role ?? "citizen"));
+  if (DISASTER) return mine;
+  const seen = new Set(NAV.map((n) => n.to));
+  return [...NAV, ...mine.filter((n) => !seen.has(n.to) && (seen.add(n.to), true))];
+}
 
-/** Each role's home page in the disaster edition. */
+/** The dashboard: the original one in the full edition; each role's home in the disaster edition. */
 function Home() {
   const { user } = useAuth();
   if (!DISASTER) return <DashboardPage />;
@@ -119,11 +125,7 @@ const TITLES: Record<string, string> = {
   "/app/settings": DISASTER ? "Settings" : "Settings & API keys", "/app/usage": "Usage", "/app/audit": "Audit log",
 };
 function titleFor(path: string): string {
-  if (DISASTER) {
-    const d = DNAV.find((n) => n.to === path);
-    if (d) return d.label;
-  }
-  const exact = NAV.find((n) => n.to === path);
+  const exact = (DISASTER ? DNAV : NAV).find((n) => n.to === path) ?? DNAV.find((n) => n.to === path);
   if (exact) return exact.label;
   if (TITLES[path]) return TITLES[path];
   const prefix = NAV.filter((n) => !n.end && path.startsWith(n.to + "/")).sort((x, y) => y.to.length - x.to.length)[0];
@@ -162,7 +164,9 @@ export function AppShell() {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="usage" element={hide(<UsagePage />)} />
           <Route path="audit" element={<AuditPage />} />
-          {DISASTER && <>
+          {/* disaster coordination (Maun): available in both editions */}
+          <>
+            <Route path="command" element={<ForRoles roles={["authority"]}><CommandPage /></ForRoles>} />
             <Route path="help" element={<HelpPage />} />
             <Route path="my-requests" element={<MyRequestsPage />} />
             <Route path="drain" element={<DrainWatchPage />} />
@@ -174,7 +178,7 @@ export function AppShell() {
             <Route path="volunteers" element={<ForRoles roles={["authority"]}><VolunteersPage /></ForRoles>} />
             <Route path="estimates" element={<ForRoles roles={["authority"]}><EstimatesPage /></ForRoles>} />
             <Route path="silent-zones" element={<ForRoles roles={["authority"]}><SilentZonesPage /></ForRoles>} />
-          </>}
+          </>
         </Route>
         <Route path="*" element={<main className="boot-error"><h1>Page not found</h1><a className="btn" href="/app/dashboard">Go to the dashboard</a></main>} />
       </Routes>
@@ -216,7 +220,7 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
       <aside ref={side} className={`sidebar ${open ? "open" : ""}`} aria-label="Primary">
         <a className="brand-link" href="/">
           <Logo size={30} />
-          <span>{PRODUCT}<small>{DISASTER ? `Disaster coordination${user?.role ? ` · ${user.role}` : ""}` : "Satellite flood intelligence"}</small></span>
+          <span>{PRODUCT}<small>{DISASTER ? "Disaster coordination" : "Satellite intelligence & disaster coordination"}{user?.role ? ` · ${user.role}` : ""}</small></span>
         </a>
         <nav className="side-nav" aria-label="Main">
           {groups.map((g) => (

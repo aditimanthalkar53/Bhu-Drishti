@@ -29,8 +29,8 @@ export function SettingsPage() {
       {act.message && <p className="notice notice-ok">{act.message}</p>}
       <section className="card">
         <h2>Profile</h2>
-        <p>{user?.name} · {user?.email}{DISASTER && user?.role ? ` · ${user.role}` : ""}</p>
-        {DISASTER && <ProfileEditor />}
+        <p>{user?.name} · {user?.email}{user?.role ? ` · ${user.role}` : ""}</p>
+        <ProfileEditor />
         <ChangePassword />
       </section>
 

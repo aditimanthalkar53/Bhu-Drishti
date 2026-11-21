@@ -28,7 +28,7 @@ export interface Config {
   frameAncestors: string[];
   /** Public address of the website, used in password-reset links. */
   appUrl: string;
-  /** "disaster" (default): the Maun coordination product; "full": every feature. */
+  /** "full" (default): every feature, satellite and coordination; "disaster": the slimmed coordination edition. */
   featureMode: FeatureMode;
   /** Accounts that are authorities. Authority is never self-assigned. */
   authorityEmails: string[];

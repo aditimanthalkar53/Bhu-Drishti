@@ -62,8 +62,8 @@ before(async () => {
   const port = (engine.server.address() as { port: number }).port;
   const env = { ENGINE_URL: `http://127.0.0.1:${port}`, JWT_SECRET: "test", SQLITE_PATH: ":memory:", MONITOR_SCHEDULER: "false",
     AUTHORITY_EMAILS: `${AUTH1}, ${AUTH2}`, UPLOADS_DIR: uploads, DRAIN_AUTHORITY_EMAIL: "ward-office@city.example" };
-  app = await buildApp(loadConfig(env as any), { logger: false });
-  full = await buildApp(loadConfig({ ...env, FEATURE_MODE: "full" } as any), { logger: false });
+  app = await buildApp(loadConfig({ ...env, FEATURE_MODE: "disaster" } as any), { logger: false });
+  full = await buildApp(loadConfig(env as any), { logger: false });   // no FEATURE_MODE: the default is full
   A1 = (await signup(app, AUTH1)).h;
   A2 = (await signup(app, AUTH2)).h;
 });
@@ -76,7 +76,7 @@ after(async () => {
 });
 
 // ---------------------------------------------------------------- feature flag
-test("disaster mode hides API keys, webhooks, usage and new satellite questions; full mode restores them", async () => {
+test("full mode (the default) serves everything; the optional disaster edition hides API keys, webhooks, usage and new satellite questions", async () => {
   const a = await signup(app, "flag@x.example");
   for (const url of ["/api/keys", "/api/webhooks", "/api/usage", "/api/settings/integrations"]) {
     assert.equal((await app.inject({ url, headers: a.h })).statusCode, 404, url);
@@ -86,6 +86,8 @@ test("disaster mode hides API keys, webhooks, usage and new satellite questions;
   const b = await signup(full, "flag@x.example");
   assert.equal((await full.inject({ url: "/api/keys", headers: b.h })).statusCode, 200);
   assert.equal((await full.inject({ url: "/api/usage", headers: b.h })).statusCode, 200);
+  assert.equal((await full.inject({ url: "/api/edition" })).json().featureMode, "full");
+  assert.equal((await full.inject({ url: "/api/requests", headers: b.h })).statusCode, 200, "coordination features are on in full mode too");
   assert.equal(isHidden("disaster", "GET", "/api/queries/abc/trace"), false, "trace/replay endpoints stay reachable");
   assert.equal(isHidden("disaster", "POST", "/api/detections"), true);
 });

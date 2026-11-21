@@ -536,8 +536,8 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
   });
 
   app.get("/api/audit", auth, async (req) => {
-    // in disaster mode authorities share one log: triage, approvals and deliveries are done by several people
-    const shared = opts.featureMode === "disaster" && (await app.roles.roleOfId(req.userId!)) === "authority";
+    // authorities share one log: triage, approvals and deliveries are done by several people
+    const shared = (await app.roles.roleOfId(req.userId!)) === "authority";
     const rows = await store.listRecords<AuditEntry>("audit", shared ? undefined : req.userId!);
     return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 500);
   });

@@ -1,12 +1,13 @@
 import type { FastifyInstance } from "fastify";
 
 /**
- * FEATURE_MODE: "disaster" (default) shows the Maun disaster-coordination product; "full" restores every feature.
- * Nothing is deleted in disaster mode: the routes below simply answer 404, and the code stays in place.
+ * FEATURE_MODE: "full" (default) serves every feature: the satellite product (AEQE questions, change detection, twins,
+ * monitors, API keys, webhooks…) together with the Maun disaster-coordination features. "disaster" is an optional
+ * slimmed edition: the routes below answer 404 there, and the code stays in place.
  */
 export type FeatureMode = "disaster" | "full";
 
-export const featureMode = (env: NodeJS.ProcessEnv = process.env): FeatureMode => (env.FEATURE_MODE === "full" ? "full" : "disaster");
+export const featureMode = (env: NodeJS.ProcessEnv = process.env): FeatureMode => (env.FEATURE_MODE === "disaster" ? "disaster" : "full");
 
 /** [method or "*", path pattern] hidden in disaster mode. */
 const HIDDEN: [string, RegExp][] = [

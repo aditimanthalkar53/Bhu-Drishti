@@ -1,9 +1,11 @@
 # Maun / Bhu-Drishti
 
-> **The default build is Maun, a disaster coordination platform.** It brings citizens, volunteers and authorities
+> **Bhu-Drishti now includes Maun, a disaster coordination platform.** Maun brings citizens, volunteers and authorities
 > together so that requests, offers of help and official updates are shared and coordinated in one place. Maun (मौन,
 > "silence") also estimates the need nobody reported. See [Disaster mode (Maun)](#disaster-mode-maun) below.
-> `FEATURE_MODE=full` (and `VITE_FEATURE_MODE=full` for the website) restores the original satellite product described next.
+> By default (`FEATURE_MODE=full`) every feature is on: the satellite product described next (AEQE questions, change
+> detection, digital twins, monitors…) and the coordination pages. `FEATURE_MODE=disaster` together with
+> `VITE_FEATURE_MODE=disaster` builds an optional slimmed coordination-only edition.
 
 **Satellite monitoring for every district in India, with the uncertainty stated.** Ask a question in plain language
 ("What percentage of cropland in Barpeta was flooded during 1–15 July 2024?", "How many fire detections were there in
@@ -142,11 +144,11 @@ The seed creates:
 All of it is labelled demo / SIMULATED.
 
 ### Environment
-`FEATURE_MODE` (backend) / `VITE_FEATURE_MODE` (website, build time) = `disaster` (default) or `full`; `AUTHORITY_EMAILS`;
+`FEATURE_MODE` (backend) / `VITE_FEATURE_MODE` (website, build time) = `full` (default, everything) or `disaster`; `AUTHORITY_EMAILS`;
 `INTAKE_PROVIDER/MODEL/API_KEY/BASE_URL`; `VISION_PROVIDER/MODEL/API_KEY/BASE_URL`; `DRAIN_AUTHORITY_EMAIL`,
 `DRAIN_WARD_EMAILS`; `UPLOADS_DIR`; `OBS_SIM_DELAY_S`. Model keys stay on the server.
 
-**Hidden in disaster mode** (code kept; API answers 404, pages redirect to the dashboard):
+**Hidden only in the optional disaster edition** (code kept; API answers 404, pages redirect to the dashboard):
 - the Drift Simulator, Explore (the satellite question compiler) and its new questions about flooded or burned cropland,
   new construction and kilns;
 - change detection, digital twins, Areas, Monitors and History;
@@ -154,7 +156,7 @@ All of it is labelled demo / SIMULATED.
 - the replay/compare/trace/CSV buttons (their endpoints stay);
 - the landing page's benchmark and 735-district sections.
 
-Set both flags to `full` to restore everything.
+In the default `full` edition all of these stay visible, next to the coordination pages; the authority Command view is at `/app/command`.
 
 ### Limitations
 - Web only, and it needs connectivity.
