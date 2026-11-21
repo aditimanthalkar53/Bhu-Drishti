@@ -13,9 +13,12 @@ const km = (a: Fix, lat: number, lng: number) => {
   return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(h)));
 };
 
-/** "Field check: cell c006_005 (North-west)" → { name: "Area c006_005", area: "North-west" } */
+/** An area check is named after the nearest real place ("Ganak Kuchi Gaon", "4 km south-west of Budrutop"); the grid code
+ *  is only a small reference. Older tasks without a place name fall back to the code. */
 function label(t: Task): { name: string; area: string | null } {
   if (t.type !== "field_check") return { name: t.title, area: null };
+  const code = t.cellId ? `area ${t.cellId}` : null;
+  if (t.placeName) return { name: t.placeName, area: code };
   const m = /cell (\S+) \(([^)]+)\)/.exec(t.title);
   return m ? { name: `Area ${m[1]}`, area: m[2] } : { name: t.title, area: null };
 }

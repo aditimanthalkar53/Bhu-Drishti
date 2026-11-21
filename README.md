@@ -389,7 +389,8 @@ builds the container and starts it with no configuration and checks it end to en
 
 ## Data credits
 
-InSAR processing by NASA ASF HyP3 (GAMMA software); Copernicus Sentinel data (ESA) via Microsoft Planetary Computer and the Copernicus Data Space Ecosystem; ESA WorldCover
+Place names for areas ("Ganak Kuchi Gaon", "4 km south-west of Budrutop"): GeoNames (geonames.org, CC BY 4.0), downloaded once
+into the engine's data folder. Place lookups for SACHET alerts: Open-Meteo geocoding API. InSAR processing by NASA ASF HyP3 (GAMMA software); Copernicus Sentinel data (ESA) via Microsoft Planetary Computer and the Copernicus Data Space Ecosystem; ESA WorldCover
 2021 (CC BY 4.0); Copernicus DEM GLO-30; NASA FIRMS; Hansen/UMD/Google/USGS/NASA Global Forest Change (CC BY 4.0); JRC Global Surface Water; Meta High Resolution
 Settlement Layer and WorldPop (CC BY 4.0); OpenStreetMap contributors (ODbL); NASA GPM IMERG and LANCE MODIS NRT flood product; Open-Meteo and
 Copernicus GloFAS; district boundaries © geoBoundaries contributors (ODbL 1.0); Google AlphaEarth Foundations satellite

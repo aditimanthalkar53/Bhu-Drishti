@@ -98,6 +98,8 @@ export interface Task extends StoredRecord {
   offerId: string | null;
   runId: string | null;
   cellId: string | null;
+  /** area checks: a human name for the area ("Ganak Kuchi Gaon", "4 km south-west of Budrutop") */
+  placeName?: string | null;
   lat: number | null;
   lng: number | null;
   status: "open" | "claimed" | "done" | "unreachable" | "cancelled";

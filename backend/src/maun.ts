@@ -193,12 +193,63 @@ export async function computeAndStore(store: Store, engine: EngineClient, run: M
   return run;
 }
 
-export async function createTasks(store: Store, run: MaunRun, cellIds: string[], by: string) {
+// ---------------------------------------------------------------------------- human names for areas
+
+export interface PlaceName { label: string; place: string; km: number; direction: string | null }
+const placeCache = new Map<string, PlaceName | null>();
+const pkey = (lat: number, lon: number) => `${lat.toFixed(4)},${lon.toFixed(4)}`;
+
+/** "Ganak Kuchi Gaon" or "4 km south-west of Budrutop" for each point (engine: GeoNames gazetteer). Never throws: points it
+ *  cannot name are simply missing from the answer, and callers keep the grid code. */
+export async function placeNames(engine: EngineClient, points: { id: string; lat: number; lon: number }[]): Promise<Record<string, PlaceName>> {
+  const out: Record<string, PlaceName> = {};
+  const todo = points.filter((p) => {
+    const hit = placeCache.get(pkey(p.lat, p.lon));
+    if (hit) out[p.id] = hit;
+    return hit === undefined;
+  });
+  if (todo.length) {
+    try {
+      // the first call may download the GeoNames list (15 MB) into the engine's data folder
+      const r = await engine.json<{ names: Record<string, PlaceName> }>("/places/names",
+        { method: "POST", body: JSON.stringify({ points: todo.map((p) => ({ id: p.id, lat: p.lat, lon: p.lon })) }) }, 400_000);
+      for (const p of todo) {
+        const n = r.names[p.id] ?? null;
+        placeCache.set(pkey(p.lat, p.lon), n);
+        if (n) out[p.id] = n;
+      }
+    } catch { /* engine unavailable: no names this time */ }
+  }
+  return out;
+}
+
+export const areaTaskTitle = (place: PlaceName | undefined, cellId: string, quadrant: string) =>
+  place ? `Area check: ${place.label}` : `Field check: cell ${cellId} (${quadrant})`;
+
+/** Name the area-check tasks that do not have a place name yet (tasks created before names existed). */
+export async function nameAreaTasks(store: Store, engine: EngineClient, tasks: Task[]): Promise<Task[]> {
+  const unnamed = tasks.filter((t) => t.type === "field_check" && !t.placeName && t.lat != null && t.lng != null);
+  if (!unnamed.length) return tasks;
+  const names = await placeNames(engine, unnamed.map((t) => ({ id: t.id, lat: t.lat!, lon: t.lng! })));
+  const updated = new Map<string, Task>();
+  for (const t of unnamed) {
+    const n = names[t.id];
+    if (!n) continue;
+    const next: Task = { ...t, placeName: n.label, title: `Area check: ${n.label}` };
+    await store.putRecord("task", next);
+    updated.set(t.id, next);
+  }
+  return tasks.map((t) => updated.get(t.id) ?? t);
+}
+
+export async function createTasks(store: Store, run: MaunRun, cellIds: string[], by: string, engine?: EngineClient) {
   const byId = new Map(run.cells.map((c) => [c.id, c]));
+  const names = engine ? await placeNames(engine, cellIds.map((id) => { const m = center(byId.get(id)!.bbox); return { id, lat: m.lat, lon: m.lng }; })) : {};
   for (const id of cellIds) {
     const c = byId.get(id)!;
     const ctr = center(c.bbox);
-    const t: Task = { id: `task-${randomUUID()}`, ownerId: by, createdAt: now(), title: `Field check: cell ${id} (${c.area})`, type: "field_check",
+    const t: Task = { id: `task-${randomUUID()}`, ownerId: by, createdAt: now(), title: areaTaskTitle(names[id], id, c.area), type: "field_check",
+      placeName: names[id]?.label ?? null,
       description: `Visit this ~${c.area_km2.toFixed(1)} km² cell and count households that need rescue, food or water, shelter or medical help. ` +
         `This cell was chosen at random: please do not swap it for an easier one. If you cannot reach it, mark it unreachable.`,
       requestId: null, offerId: null, runId: run.id, cellId: id, lat: ctr.lat, lng: ctr.lng, status: "open", claimedBy: null, claimedByName: null,
@@ -268,7 +319,7 @@ export function maunRoutes(app: FastifyInstance, store: Store, engine: EngineCli
     } catch (e) {
       return fail(reply, e);
     }
-    await createTasks(store, run, run.waves.at(-1)?.cells ?? [], req.userId!);
+    await createTasks(store, run, run.waves.at(-1)?.cells ?? [], req.userId!, engine);
     await audit(store, req.userId!, req.userId!, "maun.run.create", `maun_run:${run.id}`, { cells: cells.length, wave: run.waves.at(-1)?.cells.length });
     return reply.code(201).send(summary(run));
   });
@@ -281,7 +332,9 @@ export function maunRoutes(app: FastifyInstance, store: Store, engine: EngineCli
     if (!run) return reply.code(404).send({ error: "run not found" });
     try { run = await computeAndStore(store, engine, run); } catch { /* engine down: show the last stored estimate */ }
     const trace = await engine.post<Record<string, any>>("/maun/compute", specOf(run)).then((o) => o.trace).catch(() => null);
-    return { ...summary(run), cells: run.cells, results: run.results, resultMeta: run.resultMeta, last: run.last, trace };
+    const names = await placeNames(engine, run.cells.map((c) => { const m = center(c.bbox); return { id: c.id, lat: m.lat, lon: m.lng }; }));
+    const places = Object.fromEntries(Object.entries(names).map(([k, v]) => [k, v.label]));
+    return { ...summary(run), cells: run.cells, results: run.results, resultMeta: run.resultMeta, last: run.last, trace, places };
   });
 
   app.post<{ Params: { id: string }; Body: { size?: number } | null }>("/api/maun/runs/:id/waves", authority, async (req, reply) => {
@@ -290,7 +343,7 @@ export function maunRoutes(app: FastifyInstance, store: Store, engine: EngineCli
         const r = await store.getRecord<MaunRun>("maun_run", req.params.id);
         if (!r) throw Object.assign(new Error("run not found"), { statusCode: 404 });
         await computeAndStore(store, engine, r, Math.max(1, Math.min(200, req.body?.size ?? r.waveSize)));
-        await createTasks(store, r, r.waves.at(-1)!.cells, req.userId!);
+        await createTasks(store, r, r.waves.at(-1)!.cells, req.userId!, engine);
         return r;
       });
       await audit(store, req.userId!, req.userId!, "maun.wave", `maun_run:${run.id}`, { cells: run.waves.at(-1)!.cells.length });
@@ -339,6 +392,8 @@ export function maunRoutes(app: FastifyInstance, store: Store, engine: EngineCli
     const runs = (await store.listRecords<MaunRun>("maun_run")).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const run = req.query.runId ? runs.find((r) => r.id === req.query.runId) : runs[0];
     if (!run) return { run: null, zones: [] };
-    return { run: { id: run.id, name: run.name, simulated: run.simulated }, zones: run.last?.silent_zones ?? [] };
+    const zones = (run.last?.silent_zones ?? []) as { id: string; bbox: [number, number, number, number] | null }[];
+    const names = await placeNames(engine, zones.filter((z) => z.bbox).map((z) => { const m = center(z.bbox!); return { id: z.id, lat: m.lat, lon: m.lng }; }));
+    return { run: { id: run.id, name: run.name, simulated: run.simulated }, zones: zones.map((z) => ({ ...z, place: names[z.id]?.label ?? null })) };
   });
 }

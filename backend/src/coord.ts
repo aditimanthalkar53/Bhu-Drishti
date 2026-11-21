@@ -7,7 +7,7 @@ import type { Report } from "./domain.js";
 import { sendMail, smtpConfigured } from "./email.js";
 import type { EngineClient } from "./engine-client.js";
 import { hazardAt } from "./hazard/index.js";
-import { recordFieldCheck } from "./maun.js";
+import { nameAreaTasks, recordFieldCheck } from "./maun.js";
 import { RateLimiter } from "./ratelimit.js";
 import { guard, type Profile } from "./roles.js";
 import type { Store } from "./store/types.js";
@@ -361,6 +361,7 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
     if (req.role !== "authority") list = list.filter((t) => t.status === "open" || t.claimedBy === req.userId);
     if (req.query.status) list = list.filter((t) => t.status === req.query.status);
     if (req.query.runId) list = list.filter((t) => t.runId === req.query.runId);
+    list = await nameAreaTasks(store, engine, list);   // area checks made before place names existed get named once
     return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   });
 

@@ -71,7 +71,7 @@ export function CommandPage() {
           <h2>Silent zones</h2>
           {zones.length === 0 && <p className="muted small">None flagged. Start a run on the <Link to="/app/estimates">Estimates</Link> page to look for unreported need.</p>}
           <ul className="list">
-            {zones.slice(0, 6).map((z) => <li key={z.id}><strong>{z.id}</strong> <span className="small">{z.reason}</span><p className="small muted">{z.action}</p></li>)}
+            {zones.slice(0, 6).map((z) => <li key={z.id}><strong>{z.place ?? z.id}</strong> <span className="small">{z.reason}</span><p className="small muted">{z.action}</p></li>)}
           </ul>
         </section>
       </div>

@@ -21,7 +21,7 @@ interface Last {
 interface RunSummary { id: string; name: string; createdAt: string; simulated: boolean; cellCount: number; waveSize: number; bbox: [number, number, number, number]; notes: string[];
   hazardSources: { id: string; state: string }[]; observationIds: string[]; history?: { n: number; t: number; value: number; lo: number; hi: number }[];
   last: { status: string; overall: Overall | null; checks_done: number; pending: number; unreachable: number; silent: number } | null }
-interface RunDetail extends Omit<RunSummary, "last"> { cells: { id: string; bbox: [number, number, number, number]; area: string }[]; last: Last | null }
+interface RunDetail extends Omit<RunSummary, "last"> { cells: { id: string; bbox: [number, number, number, number]; area: string }[]; last: Last | null; places?: Record<string, string> }
 
 const n0 = (v: number) => Math.round(v).toLocaleString("en-IN");
 const fmtRate = (r: Rate | null | undefined) => (r ? `${Math.round(r.rate * 100)}% (${Math.round(r.lo * 100)}–${Math.round(r.hi * 100)}%)` : "–");
@@ -148,7 +148,7 @@ function RunView({ id }: { id: string }) {
               const op = show === "status" ? (s.status === "not_selected" ? 0.05 : 0.55) : 0.1 + 0.5 * (show === "hidden" ? (s.hidden_need ?? 0) / maxHidden : s.hazard);
               return (
                 <Rectangle key={c.id} bounds={[[c.bbox[1], c.bbox[0]], [c.bbox[3], c.bbox[2]]]} pathOptions={{ weight: s.status === "pending" || s.status === "unreachable" ? 1.5 : 0.3, color: statusColor(s.status), fillColor: fill, fillOpacity: op }}>
-                  <Tooltip>{c.id} ({c.area}) · stratum {s.stratum} · {s.status.replace(/_/g, " ")}<br />{Math.round(s.households)} households · reported {s.reported} · {s.measured != null ? `measured ${s.measured}` : s.estimated_need != null ? `estimated ${s.estimated_need.toFixed(1)}` : "not estimated yet"}{s.hidden_need != null ? ` · hidden ${s.hidden_need.toFixed(1)}` : ""} · hazard {s.hazard.toFixed(2)}</Tooltip>
+                  <Tooltip><strong>{r.places?.[c.id] ?? c.id}</strong> ({c.id}) · stratum {s.stratum} · {s.status.replace(/_/g, " ")}<br />{Math.round(s.households)} households · reported {s.reported} · {s.measured != null ? `measured ${s.measured}` : s.estimated_need != null ? `estimated ${s.estimated_need.toFixed(1)}` : "not estimated yet"}{s.hidden_need != null ? ` · hidden ${s.hidden_need.toFixed(1)}` : ""} · hazard {s.hazard.toFixed(2)}</Tooltip>
                 </Rectangle>
               );
             })}
@@ -211,8 +211,8 @@ export function SilentZonesPage() {
           <section className="card"><MapFrame height={380} bounds={bounds}><SilentCells zones={z} /></MapFrame></section>
           <div className="table-scroll card">
             <table className="tbl">
-              <thead><tr><th>Cell</th><th>Why</th><th>Evidence</th><th className="num">Unreported need</th><th className="num">p-value</th><th className="num">Reports</th><th>Check</th><th>Suggested action</th></tr></thead>
-              <tbody>{z.map((x) => <tr key={x.id}><td>{x.id}</td><td className="small">{x.reason}</td><td className="small">{SILENT_BASIS[x.basis] ?? x.basis}</td><td className="num">{x.estimated_gap != null ? `~${Math.round(x.estimated_gap)} households` : "–"}</td><td className="num">{x.p_value != null ? x.p_value.toFixed(3) : "–"}</td><td className="num">{x.reported}</td><td>{x.status.replace(/_/g, " ")}</td><td className="small">{x.action}</td></tr>)}</tbody>
+              <thead><tr><th>Area</th><th>Why</th><th>Evidence</th><th className="num">Unreported need</th><th className="num">p-value</th><th className="num">Reports</th><th>Check</th><th>Suggested action</th></tr></thead>
+              <tbody>{z.map((x) => <tr key={x.id}><td>{x.place ?? x.id}{x.place && <div className="muted small">{x.id}</div>}</td><td className="small">{x.reason}</td><td className="small">{SILENT_BASIS[x.basis] ?? x.basis}</td><td className="num">{x.estimated_gap != null ? `~${Math.round(x.estimated_gap)} households` : "–"}</td><td className="num">{x.p_value != null ? x.p_value.toFixed(3) : "–"}</td><td className="num">{x.reported}</td><td>{x.status.replace(/_/g, " ")}</td><td className="small">{x.action}</td></tr>)}</tbody>
             </table>
           </div>
         </>
