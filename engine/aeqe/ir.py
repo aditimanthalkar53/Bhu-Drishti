@@ -6,11 +6,17 @@ downstream — validation, planning, sampling, estimation — is deterministic c
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def utc_today() -> date:
+    """Today's date in UTC. Imagery, the future-date checks and the pipelines all use UTC, so questions must too:
+    the machine's local date is a day ahead of UTC for part of every day in India (00:00-05:30 IST)."""
+    return datetime.now(timezone.utc).date()
 
 
 class Task(str, Enum):

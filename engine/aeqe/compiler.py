@@ -25,7 +25,7 @@ from typing import Optional
 import httpx
 from pydantic import ValidationError
 
-from .ir import TASK_TARGETS, Point, QueryIR, Target, Task
+from .ir import TASK_TARGETS, Point, QueryIR, Target, Task, utc_today
 
 MONTHS = {m: i + 1 for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"])}
@@ -133,7 +133,7 @@ def parse_dates(text: str, today: Optional[date] = None) -> tuple[Optional[date]
     """Return (start, end, baseline_start, baseline_end, notes)."""
     t = text.lower()
     notes: list[str] = []
-    today = today or date.today()
+    today = today or utc_today()
     rel = parse_relative(t, today)
     if rel:
         return rel[0], rel[1], None, None, [rel[2]]
@@ -196,7 +196,7 @@ class RuleCompiler:
         t = q.lower()
         assumptions: list[str] = []
         overrides = dict(overrides or {})
-        today = today or date.today()
+        today = today or utc_today()
         if latest_year is None:
             # a dry-season (Jan–Mar) Sentinel-2 composite for this year exists from April on
             latest_year = (today.year if today.month >= 4 else today.year - 1) if live else 2025
@@ -419,7 +419,7 @@ class LLMCompiler:
 
     def compile(self, question: str, *, region_id: str, overrides: Optional[dict] = None, live: bool = False,
                 today: Optional[date] = None, **_) -> CompileResult:
-        today = today or date.today()
+        today = today or utc_today()
         ctx = (f"Today is {today.isoformat()}. The region uses live satellite data: with no dates, use the most recent "
                f"14 days (floods), 10 days (fires) or 30 days (burned area); never use future dates."
                if live else "The region is a simulated demo district; archive covers 2017–2025.")
