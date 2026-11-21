@@ -138,14 +138,17 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
     return { ok: true };
   });
 
-  app.post<{ Body: { email: string; password: string; name?: string; role?: "citizen" | "volunteer"; ward?: string; phone?: string; language?: Language } }>("/api/auth/register", {
+  app.post<{ Body: { email: string; password: string; name?: string; role?: "citizen" | "volunteer"; ward?: string; phone?: string; language?: Language;
+    skills?: string[]; resources?: string[] } }>("/api/auth/register", {
     schema: {
       body: {
         type: "object", required: ["email", "password"],
         properties: { email: { type: "string", minLength: 3, maxLength: 200 }, password: { type: "string", minLength: 8, maxLength: 200 }, name: { type: "string", maxLength: 100 },
           // authority is never self-assigned: the schema only accepts these two
           role: { type: "string", enum: ["citizen", "volunteer"] }, ward: { type: "string", maxLength: 80 }, phone: { type: "string", maxLength: 30 },
-          language: { type: "string", enum: ["en", "hi", "kn", "as"] } },
+          language: { type: "string", enum: ["en", "hi", "kn", "as"] },
+          // volunteers: what they can do and bring
+          skills: { type: "array", maxItems: 12, items: { type: "string", maxLength: 60 } }, resources: { type: "array", maxItems: 12, items: { type: "string", maxLength: 60 } } },
       },
     },
   }, async (req, reply) => {
@@ -160,19 +163,31 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
     });
     await ensureDefaultProject(store, u.id);
     const p = await app.roles.profile(u);
+    const tidy = (xs?: string[]) => (xs ?? []).map((x) => x.trim()).filter(Boolean).slice(0, 12);
     await store.putRecord("profile", { ...p, role: req.body.role ?? "citizen", ward: req.body.ward?.trim() || null,
-      phone: req.body.phone?.trim() || null, language: req.body.language ?? "en" });
+      phone: req.body.phone?.trim() || null, language: req.body.language ?? "en",
+      skills: req.body.role === "volunteer" ? tidy(req.body.skills) : [], resources: req.body.role === "volunteer" ? tidy(req.body.resources) : [] });
     return reply.code(201).send(await issue(u));
   });
 
-  app.post<{ Body: { email: string; password: string } }>("/api/auth/login", {
-    schema: { body: { type: "object", required: ["email", "password"], properties: { email: { type: "string" }, password: { type: "string" } } } },
+  const ROLE_PAGE: Record<string, string> = { citizen: "Citizen", volunteer: "Volunteer", authority: "Authority" };
+
+  app.post<{ Body: { email: string; password: string; role?: "citizen" | "volunteer" | "authority" } }>("/api/auth/login", {
+    schema: { body: { type: "object", required: ["email", "password"], properties: { email: { type: "string" }, password: { type: "string" },
+      // each role signs in on its own page; an account can only sign in on the page of its role
+      role: { type: "string", enum: ["citizen", "volunteer", "authority"] } } } },
   }, async (req, reply) => {
     const ip = req.ip;
     if (!authLimiter.check(`login:${ip}`)) return reply.code(429).send({ error: "too many requests — try again in a minute" });
     const u = await store.userByEmail(req.body.email.trim().toLowerCase());
     if (!u || !u.passwordHash || !(await bcrypt.compare(req.body.password, u.passwordHash))) {
       return reply.code(401).send({ error: "wrong email or password" });
+    }
+    if (req.body.role) {
+      const actual = await app.roles.roleOf(u);
+      if (actual !== req.body.role) {
+        return reply.code(403).send({ error: `This is a ${actual} account. Please use the ${ROLE_PAGE[actual]} sign-in.`, role: actual });
+      }
     }
     return await issue(u);
   });

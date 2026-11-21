@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "rea
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { Logo } from "../AppShell";
-import { AuthModal } from "../components/AuthModal";
+import { RoleChooser, RoleChooserModal } from "./RoleAuthPage";
 import { gsap, magnetic, scrollCounters, scrollReveals, useGsap } from "../motion";
 import { ThemeToggle } from "../theme";
 import { DISASTER } from "../featureFlags";
@@ -43,7 +43,7 @@ function SatelliteLanding() {
   const [scrolled, setScrolled] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
-  const handleCta = () => (user ? navigate("/app") : setShowAuth(true));
+  const handleCta = () => (user ? navigate("/app/dashboard") : setShowAuth(true));
 
   useEffect(() => {
     const on = () => setScrolled(window.scrollY > 24);
@@ -87,7 +87,7 @@ function SatelliteLanding() {
         <div className="lx-nav-actions">
           <ThemeToggle />
           {!loading && (user
-            ? <button className="btn btn-primary btn-pill" onClick={() => navigate("/app")}>Open workspace</button>
+            ? <button className="btn btn-primary btn-pill" onClick={() => navigate("/app/dashboard")}>Open workspace</button>
             : <>
                 <button className="btn btn-quiet btn-pill" onClick={() => setShowAuth(true)}>Sign in</button>
                 <button className="btn btn-primary btn-pill" onClick={() => setShowAuth(true)}>Get started</button>
@@ -201,6 +201,7 @@ function SatelliteLanding() {
           <p className="lx-sub">Requests, offers of help and official updates in one place, and an honest estimate of the need nobody
             reported, so volunteers and satellite observation reach the quiet areas first.</p>
         </div>
+        {!user && <div data-reveal><RoleChooser /></div>}
         <div className="lx-bento" data-stagger>
           {ROLES.map((r) => (
             <article key={r.title} className={`lx-tile ${r.wide ? "lx-tile-wide" : ""}`}>
@@ -222,7 +223,7 @@ function SatelliteLanding() {
           Data: Copernicus Sentinel (ESA), ESA WorldCover, Copernicus DEM, NASA FIRMS, NASA GPM IMERG, Open-Meteo/GloFAS, geoBoundaries (ODbL)</p>
       </footer>
 
-      {showAuth && <AuthModal onClose={() => { setShowAuth(false); if (user) navigate("/app"); }} />}
+      {showAuth && <RoleChooserModal onClose={() => setShowAuth(false)} />}
     </div>
   );
 }
@@ -326,7 +327,7 @@ function MaunLanding() {
       <footer className="lx-footer">
         <p className="muted small">Maun, built on the Bhu-Drishti AEQE engine · Hazard data: NASA FIRMS, NASA GPM IMERG, MODIS NRT Global Flood Product, Open-Meteo / Copernicus GloFAS · Official alerts: NDMA SACHET</p>
       </footer>
-      {showAuth && <AuthModal initialTab="register" onClose={() => { setShowAuth(false); if (user) navigate("/app/dashboard"); }} />}
+      {showAuth && <RoleChooserModal onClose={() => setShowAuth(false)} />}
     </div>
   );
 }

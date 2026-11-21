@@ -125,6 +125,22 @@ test("roles: self-chosen citizen/volunteer, authority only by allow-list, the ro
   assert.equal((await app.inject({ url: "/api/matches", headers: c.h })).statusCode, 403, "demotion applies to the existing token");
 });
 
+test("each role signs in on its own page; volunteers register their skills and resources", async () => {
+  const v = await signup(app, "skills@x.example", { role: "volunteer", skills: ["first aid", " swimming "], resources: ["boat"] });
+  const prof = (await app.inject({ url: "/api/profile", headers: v.h })).json();
+  assert.deepEqual([prof.skills, prof.resources], [["first aid", "swimming"], ["boat"]]);
+  const login = (email: string, role?: string) => app.inject({ method: "POST", url: "/api/auth/login", remoteAddress: ip(), payload: { email, password: "password123", ...(role ? { role } : {}) } });
+  assert.equal((await login("skills@x.example", "volunteer")).statusCode, 200);
+  const wrong = await login("skills@x.example", "authority");
+  assert.equal(wrong.statusCode, 403);
+  assert.match(wrong.json().error, /volunteer account/);
+  assert.equal((await login(AUTH1, "citizen")).statusCode, 403, "an authority cannot use the citizen sign-in");
+  assert.equal((await login(AUTH1, "authority")).statusCode, 200);
+  assert.equal((await login("skills@x.example")).statusCode, 200, "without a role the old sign-in still works (API clients)");
+  const c = await signup(app, "noskills@x.example", { role: "citizen", skills: ["ignored"] });
+  assert.deepEqual((await app.inject({ url: "/api/profile", headers: c.h })).json().skills, [], "citizens have no skills field");
+});
+
 // ---------------------------------------------------------------- requests and SOS
 test("request lifecycle: citizen creates, only authorities triage, citizens see only their own", async () => {
   const cit = await signup(app, "cit1@x.example");

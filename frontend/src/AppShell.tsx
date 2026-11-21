@@ -3,7 +3,7 @@ import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } fr
 import { api, post } from "./api";
 import { useAuth, type Role } from "./auth";
 import { DISASTER, PRODUCT } from "./featureFlags";
-import { AuthModal } from "./components/AuthModal";
+import { RoleAuthPage, RoleChooser, RoleChooserModal } from "./pages/RoleAuthPage";
 import { ago } from "./format";
 import type { Notification, Region } from "./types";
 import { gsap, pageEnter, useGsap } from "./motion";
@@ -98,32 +98,35 @@ const DNAV: NavItem[] = [
   { to: "/app/audit", label: "Audit log", icon: I.audit, group: "Records", roles: AUTH },
   { to: "/app/data", label: "Data sources", icon: I.data, group: "Records", roles: AUTH },
 ];
-/** Full edition: every original page, then the coordination pages for this role (no duplicates).
- *  Disaster edition: the coordination pages only. */
+/**
+ * Each role sees only its own pages. Citizens and volunteers: their coordination pages. Authorities: every original
+ * page (in the full edition) plus the coordination pages for authorities, without duplicates.
+ */
 function navFor(role: Role | undefined): NavItem[] {
-  const mine = DNAV.filter((n) => !n.roles || n.roles.includes(role ?? "citizen"));
-  if (DISASTER) return mine;
+  const r = role ?? "citizen";
+  const mine = DNAV.filter((n) => !n.roles || n.roles.includes(r));
+  if (DISASTER || r !== "authority") return mine;
   const seen = new Set(NAV.map((n) => n.to));
   return [...NAV, ...mine.filter((n) => !seen.has(n.to) && (seen.add(n.to), true))];
 }
 
-/** The dashboard: the original one in the full edition; each role's home in the disaster edition. */
+/** Each role's home: authorities get the dashboard (or the command view in the disaster edition). */
 function Home() {
   const { user } = useAuth();
-  if (!DISASTER) return <DashboardPage />;
-  if (user?.role === "authority") return <CommandPage />;
+  if (user?.role === "authority") return DISASTER ? <CommandPage /> : <DashboardPage />;
   return <Navigate to={user?.role === "volunteer" ? "/app/tasks" : "/app/help"} replace />;
 }
-/** Hidden in the disaster edition: redirect to the dashboard (nothing is deleted). */
-const hide = (el: ReactNode) => (DISASTER ? <Navigate to="/app/dashboard" replace /> : el);
-/** Disaster pages for some roles only; the API refuses the others too. */
+/** Pages for some roles only; anyone else is sent to their own home. The API refuses them too where it matters. */
 function ForRoles({ roles, children }: { roles: Role[]; children: ReactNode }) {
   const { user } = useAuth();
   return roles.includes(user?.role ?? "citizen") ? <>{children}</> : <Navigate to="/app/dashboard" replace />;
 }
+/** Original satellite and administration pages: authorities only; hidden altogether in the disaster edition. */
+const authorityOnly = (el: ReactNode, keepInDisaster = false) =>
+  DISASTER && !keepInDisaster ? <Navigate to="/app/dashboard" replace /> : <ForRoles roles={["authority"]}>{el}</ForRoles>;
 
 const TITLES: Record<string, string> = {
-  "/app/settings": DISASTER ? "Settings" : "Settings & API keys", "/app/usage": "Usage", "/app/audit": "Audit log",
+  "/app/settings": "Settings", "/app/usage": "Usage", "/app/audit": "Audit log",
 };
 function titleFor(path: string): string {
   const exact = (DISASTER ? DNAV : NAV).find((n) => n.to === path) ?? DNAV.find((n) => n.to === path);
@@ -147,24 +150,28 @@ export function AppShell() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+        {/* one sign-in page per role */}
+        <Route path="/citizen" element={<RoleAuthPage role="citizen" />} />
+        <Route path="/volunteer" element={<RoleAuthPage role="volunteer" />} />
+        <Route path="/authority" element={<RoleAuthPage role="authority" />} />
         <Route path="/app" element={layout}>
-          <Route index element={hide(<App />)} />
+          <Route index element={authorityOnly(<App />)} />
           <Route path="dashboard" element={<Home />} />
-          <Route path="detect" element={hide(<DetectionsPage />)} />
-          <Route path="twins" element={hide(<TwinsPage />)} />
-          <Route path="drift" element={hide(<DriftPage />)} />
-          <Route path="areas" element={hide(<AreasPage />)} />
-          <Route path="monitors" element={hide(<MonitorsPage />)} />
-          <Route path="alerts" element={<AlertsPage />} />
+          <Route path="detect" element={authorityOnly(<DetectionsPage />)} />
+          <Route path="twins" element={authorityOnly(<TwinsPage />)} />
+          <Route path="drift" element={authorityOnly(<DriftPage />)} />
+          <Route path="areas" element={authorityOnly(<AreasPage />)} />
+          <Route path="monitors" element={authorityOnly(<MonitorsPage />)} />
+          <Route path="alerts" element={authorityOnly(<AlertsPage />, true)} />
           <Route path="sachet" element={<SachetPage />} />
-          <Route path="reports" element={<ReportsPage />} />
-          <Route path="reports/:id" element={<ReportDetailPage />} />
-          <Route path="recipients" element={<RecipientsPage />} />
-          <Route path="history" element={hide(<HistoryPage />)} />
-          <Route path="data" element={<DataCatalogPage />} />
+          <Route path="reports" element={authorityOnly(<ReportsPage />, true)} />
+          <Route path="reports/:id" element={authorityOnly(<ReportDetailPage />, true)} />
+          <Route path="recipients" element={authorityOnly(<RecipientsPage />, true)} />
+          <Route path="history" element={authorityOnly(<HistoryPage />)} />
+          <Route path="data" element={authorityOnly(<DataCatalogPage />, true)} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="usage" element={hide(<UsagePage />)} />
-          <Route path="audit" element={<AuditPage />} />
+          <Route path="usage" element={authorityOnly(<UsagePage />)} />
+          <Route path="audit" element={authorityOnly(<AuditPage />, true)} />
           {/* disaster coordination (Maun): available in both editions */}
           <>
             <Route path="command" element={<ForRoles roles={["authority"]}><CommandPage /></ForRoles>} />
@@ -184,7 +191,7 @@ export function AppShell() {
         <Route path="*" element={<main className="boot-error"><h1>Page not found</h1><a className="btn" href="/app/dashboard">Go to the dashboard</a></main>} />
       </Routes>
       </Suspense>
-      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
+      {showAuth && <RoleChooserModal onClose={() => setShowAuth(false)} />}
     </>
   );
 }
@@ -221,7 +228,7 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
       <aside ref={side} className={`sidebar ${open ? "open" : ""}`} aria-label="Primary">
         <a className="brand-link" href="/">
           <Logo size={30} />
-          <span>{PRODUCT}<small>{DISASTER ? "Disaster coordination" : "Satellite intelligence & disaster coordination"}{user?.role ? ` · ${user.role}` : ""}</small></span>
+          <span>{PRODUCT}<small>{user?.role === "authority" ? (DISASTER ? "Authority · disaster coordination" : "Authority · satellite intelligence & coordination") : user?.role === "volunteer" ? "Volunteer" : user ? "Citizen" : "Disaster coordination"}</small></span>
         </a>
         <nav className="side-nav" aria-label="Main">
           {groups.map((g) => (
@@ -245,7 +252,7 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
           {ico("M4 6h16M4 12h16M4 18h16")}
         </button>
         <h1>{titleFor(pathname)}</h1>
-        {user && !DISASTER && <GlobalSearch />}
+        {user?.role === "authority" && !DISASTER && <GlobalSearch />}
         <div className="topbar-right">
           <ThemeToggle />
           {user && <Bell />}
@@ -268,11 +275,10 @@ function SignInGate() {
     <main className="page signin-gate">
       <div className="card">
         <h2>Sign in to use {PRODUCT}</h2>
-        <p className="muted">{DISASTER
-          ? "Asking for help, offering help and following official updates need an account, so responders can reach you and every action can be traced to a person. In immediate danger, call 112."
-          : "The website is open to everyone. Asking questions, monitoring areas and sending reports need an account, so your work is saved and every report can be traced to a person."}</p>
+        <p className="muted">Choose who you are. Each role has its own sign-in and sees only what it needs, and every action can be
+          traced to a person. In immediate danger, call 112.</p>
+        <RoleChooser />
       </div>
-      <AuthModal onClose={() => undefined} dismissible={false} />
     </main>
   );
 }
@@ -343,9 +349,9 @@ function UserMenu({ user, onLogout }: { user: NonNullable<HeaderProps["user"]>; 
       {open && (
         <div className="menu-pop" role="menu">
           <div className="menu-head"><strong>{user.name}</strong><span className="muted small">{user.email}</span></div>
-          <NavLink role="menuitem" className="menu-item" to="/app/settings" onClick={() => setOpen(false)}>{DISASTER ? "Settings" : "Settings & API keys"}</NavLink>
-          {!DISASTER && <NavLink role="menuitem" className="menu-item" to="/app/usage" onClick={() => setOpen(false)}>Usage</NavLink>}
-          {(!DISASTER || user.role === "authority") && <NavLink role="menuitem" className="menu-item" to="/app/audit" onClick={() => setOpen(false)}>Audit log</NavLink>}
+          <NavLink role="menuitem" className="menu-item" to="/app/settings" onClick={() => setOpen(false)}>{user.role === "authority" && !DISASTER ? "Settings & API keys" : "Settings"}</NavLink>
+          {user.role === "authority" && !DISASTER && <NavLink role="menuitem" className="menu-item" to="/app/usage" onClick={() => setOpen(false)}>Usage</NavLink>}
+          {user.role === "authority" && <NavLink role="menuitem" className="menu-item" to="/app/audit" onClick={() => setOpen(false)}>Audit log</NavLink>}
           <button role="menuitem" className="menu-item" onClick={onLogout}>Sign out</button>
         </div>
       )}

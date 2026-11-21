@@ -11,10 +11,13 @@ interface Integrations { report_delivery: string; smtp_configured: boolean; publ
 
 export function SettingsPage() {
   const { user } = useAuth();
-  // API keys, webhooks and integration details are not part of the disaster edition (the API answers 404)
-  const keys = useData<ApiKey[]>(DISASTER ? null : "/api/keys");
-  const hooks = useData<Webhook[]>(DISASTER ? null : "/api/webhooks");
-  const integ = useData<Integrations>(DISASTER ? null : "/api/settings/integrations");
+  // citizens and volunteers see only their profile; authorities also manage email delivery, API keys and webhooks
+  // (the last two are not part of the disaster edition, where the API answers 404)
+  const authority = user?.role === "authority";
+  const tools = authority && !DISASTER;
+  const keys = useData<ApiKey[]>(tools ? "/api/keys" : null);
+  const hooks = useData<Webhook[]>(tools ? "/api/webhooks" : null);
+  const integ = useData<Integrations>(tools ? "/api/settings/integrations" : null);
   const act = useAction();
   const [label, setLabel] = useState("n8n");
   const [newKey, setNewKey] = useState<string | null>(null);
@@ -24,7 +27,7 @@ export function SettingsPage() {
   const [testTo, setTestTo] = useState(user?.email ?? "");
 
   return (
-    <Page title="Settings" lead={DISASTER ? "Your profile, password and email." : "Profile, API keys for scripts and n8n, outgoing webhooks and email delivery."}>
+    <Page title="Settings" lead={tools ? "Profile, API keys for scripts and n8n, outgoing webhooks and email delivery." : authority ? "Your profile, password and email." : "Your profile and password."}>
       <ErrorNote error={act.error ?? keys.error ?? hooks.error} />
       {act.message && <p className="notice notice-ok">{act.message}</p>}
       <section className="card">
@@ -34,9 +37,9 @@ export function SettingsPage() {
         <ChangePassword />
       </section>
 
-      <section className="card">
+      {authority && <section className="card">
         <h2>Email delivery</h2>
-        {!DISASTER && <><p className="small">Mode: <strong>{integ.data?.report_delivery === "n8n" ? "n8n (reports are handed to your n8n workflow via the report.approved webhook)" : "direct SMTP"}</strong>
+        {tools && <><p className="small">Mode: <strong>{integ.data?.report_delivery === "n8n" ? "n8n (reports are handed to your n8n workflow via the report.approved webhook)" : "direct SMTP"}</strong>
           {" · "}SMTP {integ.data?.smtp_configured ? <Pill tone="ok">configured</Pill> : <Pill tone="warn">not configured</Pill>}</p>
         <p className="small">Automatic copy of every generated report (summary + technical PDF):{" "}
           {integ.data?.auto_email?.length ? <strong>{integ.data.auto_email.join(", ")}</strong> : <span className="muted">off — set REPORT_AUTO_EMAIL in .env</span>}</p></>}
@@ -47,9 +50,9 @@ export function SettingsPage() {
             return `Test email sent to ${r.to}.`;
           })}>Send test email</button>
         </div>
-      </section>
+      </section>}
 
-      {!DISASTER && <>
+      {tools && <>
       <section className="card">
         <h2>API keys</h2>
         <p className="muted small">For scripts and automation (n8n). Send as the <code>x-api-key</code> header. Keys are shown once.</p>
