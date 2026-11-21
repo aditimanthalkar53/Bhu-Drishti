@@ -161,6 +161,11 @@ test("request lifecycle: citizen creates, only authorities triage, citizens see 
   const notes = (await app.inject({ url: "/api/notifications", headers: boss })).json();
   assert.ok(notes.some((n: any) => n.title.includes("high-severity")), "authorities are notified about high-severity requests");
   assert.ok((await app.inject({ url: "/api/notifications", headers: cit.h })).json().some((n: any) => n.title.includes("verified")));
+  // a low-severity request without a location still alerts the authorities
+  const quiet = await app.inject({ method: "POST", url: "/api/requests", headers: cit.h, payload: { type: "rescue", severity: 2, originalText: "trapped inside a building", clientId: "quiet-req-0001" } });
+  assert.equal(quiet.statusCode, 201);
+  const after = (await app.inject({ url: "/api/notifications", headers: boss })).json();
+  assert.ok(after.some((n: any) => n.title.includes("new request: rescue (no location)") && n.body.includes("trapped inside")), "every request notifies authorities");
 });
 
 test("SOS: idempotent by client id, flags location and repeats, 60-second cancel, 3 per 10 minutes", async () => {

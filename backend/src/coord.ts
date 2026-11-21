@@ -101,9 +101,11 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
     if (source === "sos") {
       await notifyAuthorities(store, roles, `SOS${flags.includes("repeated") ? " (repeated)" : ""}: ${profile.displayName}`,
         `${r.lat != null ? `at ${r.lat.toFixed(5)}, ${r.lng!.toFixed(5)} (±${r.accuracyM ?? "?"} m)` : `location unknown${r.area ? `; area ${r.area}` : ""}`}`, "critical", `/app/requests?open=${r.id}`);
-    } else if (r.severity >= 3) {
-      await notifyAuthorities(store, roles, `New ${r.severity === 4 ? "critical" : "high-severity"} request: ${r.type.replace(/_/g, " ")}`,
-        (r.summaryEn || r.description).slice(0, 200), r.severity === 4 ? "critical" : "warning", `/app/requests?open=${r.id}`);
+    } else {
+      // every request alerts the authorities: the severity chosen (or guessed) by the sender must never decide whether anyone sees it
+      const kind = r.severity === 4 ? "critical" : r.severity === 3 ? "high-severity" : "new";
+      await notifyAuthorities(store, roles, `New ${kind} request: ${r.type.replace(/_/g, " ")}${r.flags.includes("location_missing") ? " (no location)" : ""}`,
+        (r.summaryEn || r.originalText || r.description).slice(0, 200), r.severity === 4 ? "critical" : r.severity === 3 ? "warning" : "info", `/app/requests?open=${r.id}`);
     }
     return reply.code(201).send(r);
   });
