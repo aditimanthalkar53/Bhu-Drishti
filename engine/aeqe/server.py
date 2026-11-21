@@ -467,6 +467,7 @@ class ObservationRequest(BaseModel):
 class TerrainRequest(BaseModel):
     geometry: dict
     detection_id: Optional[str] = None
+    margin_deg: Optional[float] = None      # ground shown around the asset, 0.002 to 0.02 degrees
 
 
 @app.get("/twins/osm")
@@ -477,7 +478,7 @@ def twin_osm_assets(lat: float, lon: float, radius_m: float = 500.0):
     if not (-90 <= lat <= 90 and -180 <= lon <= 180 and 50 <= radius_m <= 2000):
         raise HTTPException(422, "Pick a point on the map and a radius of 50 to 2000 m.")
     try:
-        return find_osm_assets(lat, lon, radius_m)
+        return find_osm_assets(lat, lon, radius_m, cache_dir=DATA_DIR / "osm")
     except Exception as e:  # noqa: BLE001 — public servers fail often; the person can still draw the asset
         raise HTTPException(503, f"OpenStreetMap could not be reached ({type(e).__name__}). You can draw the asset instead.") from e
 
@@ -495,11 +496,21 @@ def twin_terrain(req: TerrainRequest):
     from .eo import EOUnavailable
 
     try:
-        return _detections().terrain(req.geometry, req.detection_id)
+        return _detections().terrain(req.geometry, req.detection_id, req.margin_deg)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     except EOUnavailable as e:
         raise HTTPException(503, str(e)) from e
+
+
+@app.post("/twins/buildings")
+def twin_buildings(req: TerrainRequest):
+    try:
+        return _detections().buildings(req.geometry, req.margin_deg)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:  # noqa: BLE001 — optional extra: the terrain works without it
+        raise HTTPException(503, f"3D buildings could not be loaded ({type(e).__name__}).") from e
 
 
 @app.get("/cache/stats")

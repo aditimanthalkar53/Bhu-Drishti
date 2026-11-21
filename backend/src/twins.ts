@@ -10,6 +10,10 @@ type IdParams = { Params: { id: string } };
 const ASSET_TYPES = ["bridge", "road", "building", "embankment", "dam", "other"];
 const RECORD_TYPES = ["design", "inspection", "maintenance", "damage", "sensor", "note"];
 const TERRAIN_TIMEOUT_MS = 300_000;
+/** Ground shown around the asset in the "close" view (the default, "wide", is chosen by the engine: about 2 km). */
+const CLOSE_MARGIN_DEG = 0.004;
+/** Footprints come from scanning a large public dataset the first time; the engine then keeps them. */
+const BUILDINGS_TIMEOUT_MS = 600_000;
 
 /** Something a person recorded about the asset. Satellite observations are computed, never stored here. */
 export interface TwinRecord {
@@ -132,7 +136,15 @@ export function twinRoutes(app: FastifyInstance, store: Store, engine: EngineCli
     return { ok: true };
   });
 
-  app.post<IdParams & { Body: { detectionId?: string } }>("/api/twins/:id/terrain", auth, async (req, reply) => {
+  app.post<IdParams & { Body: { detail?: "wide" | "close" } }>("/api/twins/:id/buildings", auth, async (req, reply) => {
+    const t = await owned(req, reply);
+    if (!t) return;
+    try {
+      return await engine.json("/twins/buildings", { method: "POST", body: JSON.stringify({ geometry: t.geometry, margin_deg: req.body?.detail === "close" ? CLOSE_MARGIN_DEG : undefined }) }, BUILDINGS_TIMEOUT_MS);
+    } catch (e) { return engineErr(reply, e); }
+  });
+
+  app.post<IdParams & { Body: { detectionId?: string; detail?: "wide" | "close" } }>("/api/twins/:id/terrain", auth, async (req, reply) => {
     const t = await owned(req, reply);
     if (!t) return;
     const detectionId = req.body?.detectionId;
@@ -141,7 +153,7 @@ export function twinRoutes(app: FastifyInstance, store: Store, engine: EngineCli
       if (!d || d.ownerId !== req.userId) return reply.code(404).send({ error: "analysis not found" });
     }
     try {
-      return await engine.json("/twins/terrain", { method: "POST", body: JSON.stringify({ geometry: t.geometry, detection_id: detectionId }) }, TERRAIN_TIMEOUT_MS);
+      return await engine.json("/twins/terrain", { method: "POST", body: JSON.stringify({ geometry: t.geometry, detection_id: detectionId, margin_deg: req.body?.detail === "close" ? CLOSE_MARGIN_DEG : undefined }) }, TERRAIN_TIMEOUT_MS);
     } catch (e) { return engineErr(reply, e); }
   });
 }

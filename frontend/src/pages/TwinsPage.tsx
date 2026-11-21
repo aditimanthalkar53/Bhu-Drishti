@@ -1,11 +1,12 @@
 import "leaflet/dist/leaflet.css";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { CircleMarker, GeoJSON, MapContainer, Polyline, useMap, useMapEvents } from "react-leaflet";
 import { Link, useSearchParams } from "react-router-dom";
 import { ApiError, api, del, patch, post } from "../api";
 import { BaseLayers } from "../components/BaseLayers";
 import { RegionPicker } from "../components/RegionPicker";
-import type { TerrainData } from "../components/three/TwinTerrain";
+import { IMAGERY_ATTRIBUTION } from "../components/three/imagery";
+import type { Building, Imagery, ImageryState, TerrainData } from "../components/three/TwinTerrain";
 import { fmt, fmtDate } from "../format";
 import { cssVar, useTheme } from "../theme";
 import type { Region } from "../types";
@@ -220,26 +221,60 @@ function Terrain({ twin, observations }: { twin: Twin; observations: Observation
   const [busy, setBusy] = useState(false);
   const deformation = observations.filter((o) => o.kind === "ground_deformation");
   const [overlayId, setOverlayId] = useState("");
+  const [imagery, setImagery] = useState<Imagery>("sharp");
+  const [detail, setDetail] = useState<"wide" | "close">("close");
+  const [show3d, setShow3d] = useState(true);
+  const [footprints, setFootprints] = useState<{ buildings: Building[]; measured: number; source?: string } | null>(null);
+  const [footprintState, setFootprintState] = useState<"idle" | "loading" | "failed">("idle");
+  const stage = useRef<HTMLDivElement>(null);
+  const [imageryState, setImageryState] = useState<ImageryState>("sentinel");
 
   const load = async (detectionId: string) => {
     setBusy(true);
     setError(null);
     try {
-      setData(await post(`/api/twins/${twin.id}/terrain`, detectionId ? { detectionId } : {}));
+      setData(await post(`/api/twins/${twin.id}/terrain`, { ...(detectionId ? { detectionId } : {}), detail }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
-  useEffect(() => { void load(""); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [twin.id]);
+  useEffect(() => { void load(overlayId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [twin.id, detail]);
+
+  // optional and slow the first time, so the terrain never waits for it
+  useEffect(() => {
+    let stale = false;
+    setFootprints(null);
+    setFootprintState("loading");
+    post<{ buildings: Building[]; measured: number; source?: string }>(`/api/twins/${twin.id}/buildings`, { detail })
+      .then((b) => { if (!stale) { setFootprints(b); setFootprintState("idle"); } })
+      .catch(() => { if (!stale) setFootprintState("failed"); });
+    return () => { stale = true; };
+  }, [twin.id, detail]);
 
   const assetColor = useMemo(() => cssVar("--error"), [mode]);
+  const toggleFull = () => { if (document.fullscreenElement) void document.exitFullscreen(); else void stage.current?.requestFullscreen?.(); };
   return (
     <div className="twin-3d">
       <div className="row-actions">
         <label className="field twin-inline"><span>Height exaggeration: {exaggeration}×</span>
           <input type="range" min={1} max={8} value={exaggeration} onChange={(e) => setExaggeration(Number(e.target.value))} /></label>
+        <label className="field twin-inline"><span>Area shown</span>
+          <select value={detail} disabled={busy} onChange={(e) => setDetail(e.target.value as "wide" | "close")}>
+            <option value="close">Close-up (about 900 m, sharpest)</option>
+            <option value="wide">Wide (about 2 km)</option>
+          </select></label>
+        <label className="field twin-inline"><span>Ground image</span>
+          <select value={imagery} onChange={(e) => setImagery(e.target.value as Imagery)}>
+            <option value="sharp">Sharp (Esri, up to 0.5 m)</option>
+            <option value="sentinel">Sentinel-2 (10 m)</option>
+          </select></label>
+        <label className="field twin-inline"><span>3D buildings</span>
+          <select value={show3d ? "on" : "off"} onChange={(e) => setShow3d(e.target.value === "on")}>
+            <option value="on">Show</option>
+            <option value="off">Hide</option>
+          </select></label>
         {deformation.length > 0 && (
           <label className="field twin-inline"><span>Colour the ground by</span>
             <select value={overlayId} disabled={busy} onChange={(e) => { setOverlayId(e.target.value); void load(e.target.value); }}>
@@ -249,13 +284,18 @@ function Terrain({ twin, observations }: { twin: Twin; observations: Observation
         )}
       </div>
       <ErrorNote error={error} />
-      <div className="twin-stage">
+      <div className="twin-stage" ref={stage}>
+        <button className="btn btn-small twin-full" onClick={toggleFull}>Fullscreen</button>
         {busy && <p className="muted small twin-status">Building the terrain. The first time takes up to a minute…</p>}
-        {data && <Suspense fallback={null}><TwinTerrain data={data} exaggeration={exaggeration} showDisplacement={!!overlayId} assetColor={assetColor} /></Suspense>}
+        {!busy && data && imageryState === "loading" && <p className="small twin-status">Loading sharper imagery…</p>}
+        {!busy && data && imageryState !== "loading" && show3d && footprintState === "loading" && <p className="small twin-status">Loading 3D buildings. The first time here takes a few minutes…</p>}
+        {data && <Suspense fallback={null}><TwinTerrain data={data} exaggeration={exaggeration} showDisplacement={!!overlayId} assetColor={assetColor} imagery={imagery} close={detail === "close"} buildings={show3d ? footprints?.buildings ?? null : null} onImagery={setImageryState} /></Suspense>}
       </div>
       {data && (
         <p className="muted small">
-          Drag to rotate, scroll to zoom. Terrain: {data.source} at {data.res_m} m, {fmt(data.min_m, 0)} to {fmt(data.max_m, 0)} m. {data.satellite_date ? `Image: Sentinel-2, ${fmtDate(data.satellite_date, false)}.` : data.satellite_note ? `No image: ${data.satellite_note}` : ""}
+          Drag to rotate, right-drag to move, scroll to zoom to the pointer. Terrain: {data.source} at {data.res_m} m, {fmt(data.min_m, 0)} to {fmt(data.max_m, 0)} m. {imageryState === "sharp" ? `Image: ${IMAGERY_ATTRIBUTION}; capture dates vary.` : data.satellite_date ? `Image: Sentinel-2, ${fmtDate(data.satellite_date, false)}${imageryState === "unavailable" ? " (sharper imagery could not be loaded)" : ""}.` : data.satellite_note ? `No image: ${data.satellite_note}` : ""}
+          {show3d && footprints && footprints.buildings.length > 0 && ` Buildings: ${footprints.buildings.length} footprints from ${footprints.source}; ${footprints.measured ? `${footprints.measured} have stated heights, the rest are` : "heights are"} a plain ${7} m estimate.`}
+          {show3d && footprintState === "failed" && " 3D buildings could not be loaded."}
           {" "}The red line marks where the asset is. Its shape and height are not modelled.{overlayId && " Teal: toward the satellite. Brown: away from it."}
         </p>
       )}

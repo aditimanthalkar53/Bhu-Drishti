@@ -1049,3 +1049,77 @@ def test_a_server_side_timeout_is_a_failure_not_an_empty_result():
     with pytest.raises(ValueError):
         assets.overpass_query("q", lambda url, **kw: Resp({"elements": [], "remark": "runtime error: out of memory"}))
     assert assets.overpass_query("q", lambda url, **kw: Resp({"elements": []})) == {"elements": []}   # truly nothing mapped
+
+
+def _way(i, tags, pts):
+    return {"id": i, "tags": tags, "geometry": [{"lat": a, "lon": b} for a, b in pts]}
+
+
+def test_osm_search_finds_more_than_structures_and_lists_the_nearest_first():
+    sq = [(26.1, 91.1), (26.1, 91.2), (26.2, 91.2), (26.1, 91.1)]
+    rows = twin.parse_osm_assets([
+        _way(1, {"highway": "residential"}, [(26.101, 91.101), (26.102, 91.102)]),
+        _way(2, {"highway": "residential"}, [(26.1005, 91.1005), (26.1006, 91.1006)]),            # nearer to the click
+        _way(3, {"railway": "rail", "name": "Main line"}, [(26.1, 91.1), (26.2, 91.2)]),
+        _way(4, {"waterway": "canal", "name": "Irrigation canal"}, [(26.1, 91.1), (26.2, 91.2)]),
+        _way(5, {"power": "substation", "name": "Grid substation"}, sq),
+        _way(6, {"amenity": "place_of_worship", "name": "Temple"}, sq),
+    ], near=(26.1, 91.1))
+    kinds = {r["osmId"]: r["assetType"] for r in rows}
+    assert kinds == {"way/1": "road", "way/2": "road", "way/3": "other", "way/4": "other", "way/5": "other", "way/6": "building"}
+    assert [r["osmId"] for r in rows if r["assetType"] == "road"] == ["way/2", "way/1"]          # nearest first
+    by_id = {r["osmId"]: r for r in rows}
+    assert by_id["way/5"]["geometry"]["type"] == "Polygon" and by_id["way/3"]["geometry"]["type"] == "LineString"
+    assert by_id["way/4"]["geometry"]["type"] == "LineString"                                     # a canal loop is still a line
+
+
+def test_osm_lookups_are_cached_but_a_reduced_answer_never_is(tmp_path):
+    calls = []
+
+    class Resp:
+        def __init__(self, code):
+            self.code = code
+
+        def raise_for_status(self):
+            if self.code != 200:
+                raise httpx.HTTPStatusError("busy", request=httpx.Request("POST", "http://x"), response=httpx.Response(self.code))
+
+        def json(self):
+            return {"elements": [_way(7, {"building": "hospital", "name": "Civil"}, [(26.1, 91.1), (26.1, 91.2), (26.2, 91.2), (26.1, 91.1)])]}
+
+    def post(url, data, **kw):
+        calls.append(data["data"])
+        return Resp(200)
+
+    first = twin.find_osm_assets(26.1, 91.1, post=post, cache_dir=tmp_path)
+    again = twin.find_osm_assets(26.1004, 91.1004, post=post, cache_dir=tmp_path)           # same ~110 m cell
+    assert first == again and len(calls) == 1
+    twin.find_osm_assets(26.5, 91.5, post=post, cache_dir=tmp_path)                           # another place asks again
+    assert len(calls) == 2
+
+    def busy(url, data, **kw):
+        return Resp(200 if "out geom 60" in data["data"] else 502)
+
+    reduced = tmp_path / "reduced"
+    assert twin.find_osm_assets(27.0, 92.0, post=busy, cache_dir=reduced)
+    assert not list(reduced.glob("*.json")), "an answer from the reduced query must not be cached as if it were complete"
+
+
+def test_building_footprints_land_on_the_terrain_square_and_estimates_are_marked(tmp_path):
+    point = shape({"type": "Point", "coordinates": [77.9, 21.9]})
+    inside = box(77.899, 21.899, 77.8995, 21.8995).wkb
+    outside = box(70.0, 20.0, 70.001, 20.001).wkb
+    calls = []
+
+    def read(bbox):
+        calls.append(bbox)
+        return [(inside, None, None), (inside, 21.0, None), (inside, None, 4), (outside, 9.0, None), (b"not wkb", None, None)]
+
+    out = twin.find_buildings(point, tmp_path, 0.004, read=read)
+    assert [b["h"] for b in out["buildings"]] == [twin.ESTIMATED_BUILDING_M, 21.0, 12.8]      # stated, or a floors estimate, or plain
+    assert [b["estimated"] for b in out["buildings"]] == [True, False, False]
+    assert out["measured"] == 3 and all(0 <= c <= 1 for b in out["buildings"] for p in b["ring"] for c in p)
+    assert len(out["buildings"][0]["ring"]) == 4                                               # the closing point is dropped
+    assert twin.find_buildings(point, tmp_path, 0.004, read=read) == out and len(calls) == 1   # kept on disk
+    assert twin.find_buildings(point, tmp_path / "empty", 0.004, read=lambda b: [])["buildings"] == []
+    assert not (tmp_path / "empty").exists()                                                   # an empty answer is not kept

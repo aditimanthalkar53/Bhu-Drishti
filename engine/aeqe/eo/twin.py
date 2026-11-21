@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,8 @@ from typing import Any
 import numpy as np
 from affine import Affine
 from PIL import Image
-from rasterio.warp import transform_geom
+from rasterio.warp import transform as rio_transform, transform_geom
+from shapely import wkb as shapely_wkb
 from shapely.geometry import mapping, shape
 from shapely.ops import transform as shapely_transform
 
@@ -32,15 +34,28 @@ TERRAIN_MARGIN_DEG = 0.01
 TERRAIN_PIXELS = 40_000
 TEXTURE_RES_M = 10.0
 OSM_LIMIT = 40
+OSM_CACHE_DAYS = 7
+OVERTURE_BUCKET = "overturemaps-us-west-2"
+OVERTURE_REGION = "us-west-2"
+MAX_BUILDINGS = 6000
+METRES_PER_FLOOR = 3.2
+ESTIMATED_BUILDING_M = 7.0    # used for every building whose height the data does not state
 
+# Everything a person might want a twin of. The structures that matter most are listed (and sorted) first.
 ASSET_QUERIES = (
     'way["bridge"]["bridge"!="no"]', 'way["man_made"="bridge"]', 'way["man_made"~"^(dyke|embankment)$"]', 'way["waterway"="dam"]',
-    'way["embankment"="yes"]', 'way["highway"~"^(motorway|trunk|primary|secondary|tertiary)$"]',
-    'way["building"~"^(hospital|school|government)$"]', 'way["amenity"~"^(hospital|school|fire_station)$"]',
+    'way["embankment"="yes"]', 'way["waterway"~"^(weir|sluice_gate|lock_gate|canal)$"]',
+    'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)$"]',
+    'way["railway"~"^(rail|light_rail|subway|tram)$"]',
+    'way["building"~"^(hospital|school|government|public|civic|college|university|temple|mosque|church|train_station|fire_station|police)$"]',
+    'way["building"]["name"]', 'way["amenity"~"^(hospital|school|fire_station|police|college|university|place_of_worship|townhall|bus_station)$"]',
+    'way["power"~"^(substation|plant)$"]',
+    'way["man_made"~"^(water_tower|storage_tank|water_works|wastewater_plant|pumping_station)$"]',
 )
 
 
-CORE_ASSET_QUERIES = ('way["bridge"]["bridge"!="no"]', 'way["waterway"="dam"]', 'way["highway"~"^(motorway|trunk|primary)$"]')
+CORE_ASSET_QUERIES = ('way["bridge"]["bridge"!="no"]', 'way["waterway"="dam"]', 'way["highway"~"^(motorway|trunk|primary|secondary)$"]',
+                      'way["railway"="rail"]')
 
 
 def validate_geometry(geometry: dict) -> Any:
@@ -68,11 +83,13 @@ def classify_osm(tags: dict[str, str]) -> str:
         return "dam"
     if "highway" in tags:
         return "road"
-    return "building"
+    if "building" in tags or tags.get("amenity"):
+        return "building"
+    return "other"          # railway, canal, weir, substation, water tank...
 
 
-def parse_osm_assets(elements: list[dict]) -> list[dict]:
-    """Overpass ways → candidate assets, keeping only what OSM actually states."""
+def parse_osm_assets(elements: list[dict], near: tuple[float, float] | None = None) -> list[dict]:
+    """Overpass ways → candidate assets, keeping only what OSM actually states. With ``near`` (lat, lon), closer ones come first."""
     out = []
     for el in elements:
         coords = [[pt["lon"], pt["lat"]] for pt in el.get("geometry") or [] if "lon" in pt and "lat" in pt]
@@ -81,29 +98,54 @@ def parse_osm_assets(elements: list[dict]) -> list[dict]:
         tags = el.get("tags") or {}
         closed = len(coords) >= 4 and coords[0] == coords[-1]
         kind = classify_osm(tags)
-        geom = {"type": "Polygon", "coordinates": [coords]} if closed and kind == "building" else {"type": "LineString", "coordinates": coords}
+        linear = bool(tags.get("railway") or tags.get("waterway"))
+        geom = {"type": "Polygon", "coordinates": [coords]} if closed and (kind == "building" or (kind == "other" and not linear)) else {"type": "LineString", "coordinates": coords}
         attrs = {k: tags[o] for k, o in (("constructionYear", "start_date"), ("material", "material"), ("structure", "bridge:structure"),
                                          ("lanes", "lanes"), ("operator", "operator"), ("maxWeight", "maxweight"), ("surface", "surface")) if tags.get(o)}
         out.append({"osmId": f"way/{el.get('id')}", "name": tags.get("name") or tags.get("name:en") or tags.get("ref") or "", "assetType": kind,
                     "geometry": geom, "attributes": attrs})
-    order = {"bridge": 0, "dam": 1, "embankment": 2, "building": 3, "road": 4}
-    out.sort(key=lambda a: (order[a["assetType"]], not a["name"]))
+    order = {"bridge": 0, "dam": 1, "embankment": 2, "building": 3, "other": 4, "road": 5}
+
+    def away(a: dict) -> float:
+        if near is None:
+            return 0.0
+        pts = a["geometry"]["coordinates"][0] if a["geometry"]["type"] == "Polygon" else a["geometry"]["coordinates"]
+        cos = math.cos(math.radians(near[0]))
+        return min(((lat - near[0]) ** 2 + ((lon - near[1]) * cos) ** 2) for lon, lat in pts)
+
+    out.sort(key=lambda a: (order[a["assetType"]], not a["name"], away(a)))
     return out[:OSM_LIMIT]
 
 
-def find_osm_assets(lat: float, lon: float, radius_m: float = 500.0, post=None) -> list[dict]:
-    """Everything mapped nearby. When the public servers are too busy for that, the structures that matter most."""
+def find_osm_assets(lat: float, lon: float, radius_m: float = 500.0, post=None, cache_dir: Path | None = None) -> list[dict]:
+    """Everything mapped nearby. When the public servers are too busy for that, the structures that matter most.
+
+    With ``cache_dir`` a complete answer is kept for a week, keyed by the spot (to about 110 m) and radius, so asking again
+    is instant and a public-server outage does not break what was already looked up. A reduced answer is never cached."""
     around = f"(around:{float(radius_m):.0f},{float(lat)},{float(lon)})"
+    cache = cache_dir / f"{round(lat, 3):.3f}_{round(lon, 3):.3f}_{int(radius_m)}.json" if cache_dir else None
+    if cache and cache.exists() and datetime.now(UTC).timestamp() - cache.stat().st_mtime < OSM_CACHE_DAYS * 86400:
+        try:
+            return json.loads(cache.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
 
     def ask(queries: tuple[str, ...], limit: int) -> dict:
         query = "[out:json][timeout:25];(" + "".join(f"{q}{around};" for q in queries) + f");out geom {limit};"
         return overpass_query(query, post) if post else overpass_query(query)
 
     try:
-        payload = ask(ASSET_QUERIES, 200)
+        payload = ask(ASSET_QUERIES, 400)
     except Exception:  # noqa: BLE001 — overloaded servers answer 502/504; a smaller query often still gets through
-        payload = ask(CORE_ASSET_QUERIES, 60)
-    return parse_osm_assets(payload.get("elements", []))
+        return parse_osm_assets(ask(CORE_ASSET_QUERIES, 60).get("elements", []), (lat, lon))
+    found = parse_osm_assets(payload.get("elements", []), (lat, lon))
+    if cache and found:
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(found), encoding="utf-8")
+        except OSError:
+            pass
+    return found
 
 
 # ---------------------------------------------------------------------------- reading analyses at the asset
@@ -234,12 +276,24 @@ def displacement_texture(npz: Path, grid: Grid, limit_mm: float = 30.0) -> str |
     return _png_data_uri(render.diverging(out, limit_mm))
 
 
-def terrain(geom, cache_dir: Path, detection_npz: Path | None = None) -> dict[str, Any]:
-    """Elevation grid, asset outline and textures around the asset. The elevation and satellite view are cached on disk."""
+def grid_corners(grid: Grid) -> list[list[float]]:
+    """[lon, lat] of the terrain square's corners, in the order NW, NE, SW, SE, so a viewer can drape its own imagery on it."""
+    left, bottom, right, top = grid.bounds
+    xs, ys = rio_transform(grid.crs, "EPSG:4326", [left, right, left, right], [top, top, bottom, bottom])
+    return [[round(x, 6), round(y, 6)] for x, y in zip(xs, ys)]
+
+
+def _terrain_area(geom, margin_deg: float | None = None) -> tuple[dict[str, float], Grid]:
+    """The ground shown around an asset. A smaller margin gives a closer, sharper view."""
     w, s, e, n = geom.bounds
-    m = TERRAIN_MARGIN_DEG
+    m = min(0.02, max(0.002, margin_deg)) if margin_deg else TERRAIN_MARGIN_DEG
     bbox = {"west": w - m, "south": s - m, "east": e + m, "north": n + m}
-    grid = make_grid(bbox, max_pixels=TERRAIN_PIXELS, min_res_m=30.0)
+    return bbox, make_grid(bbox, max_pixels=TERRAIN_PIXELS, min_res_m=30.0)
+
+
+def terrain(geom, cache_dir: Path, detection_npz: Path | None = None, margin_deg: float | None = None) -> dict[str, Any]:
+    """Elevation grid, asset outline and textures around the asset. The elevation and satellite view are cached on disk."""
+    bbox, grid = _terrain_area(geom, margin_deg)
     key = "_".join(f"{bbox[k]:.5f}" for k in ("west", "south", "east", "north"))
     cache = cache_dir / f"{key}.json"
     fresh = cache.exists() and datetime.now(UTC).timestamp() - cache.stat().st_mtime < 14 * 86400
@@ -256,4 +310,62 @@ def terrain(geom, cache_dir: Path, detection_npz: Path | None = None) -> dict[st
                 "source": "Copernicus DEM GLO-30"}
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(base), encoding="utf-8")
-    return {**base, "lines": terrain_lines(geom, grid), "displacement": displacement_texture(detection_npz, grid) if detection_npz else None}
+    return {**base, "lines": terrain_lines(geom, grid), "corners": grid_corners(grid),
+            "displacement": displacement_texture(detection_npz, grid) if detection_npz else None}
+
+
+# ---------------------------------------------------------------------------- 3D buildings
+
+def _read_overture_buildings(bbox: dict[str, float]) -> list[tuple[bytes, float | None, float | None]]:
+    """(WKB footprint, height, floors) from Overture Maps' public release, which merges OpenStreetMap with Google's and
+    Microsoft's detected footprints. Anonymous, no key. Scanning the release takes a few minutes, hence the cache."""
+    import pyarrow.dataset as ds
+    import pyarrow.fs as pafs
+
+    s3 = pafs.S3FileSystem(anonymous=True, region=OVERTURE_REGION)
+    releases = [i.base_name for i in s3.get_file_info(pafs.FileSelector(f"{OVERTURE_BUCKET}/release/")) if i.type == pafs.FileType.Directory]
+    if not releases:
+        raise EOUnavailable("No Overture Maps release could be found.")
+    data = ds.dataset(f"{OVERTURE_BUCKET}/release/{max(releases)}/theme=buildings/type=building/", filesystem=s3, format="parquet")
+    keep = ((ds.field("bbox", "xmin") >= bbox["west"]) & (ds.field("bbox", "xmax") <= bbox["east"])
+            & (ds.field("bbox", "ymin") >= bbox["south"]) & (ds.field("bbox", "ymax") <= bbox["north"]))
+    table = data.to_table(columns=["geometry", "height", "num_floors"], filter=keep)
+    return list(zip(table["geometry"].to_pylist(), table["height"].to_pylist(), table["num_floors"].to_pylist()))
+
+
+def parse_buildings(rows: list[tuple[bytes, float | None, float | None]], grid: Grid) -> dict[str, Any]:
+    """Footprints as fractions of the terrain square, like ``terrain_lines``. Heights come from the data where it has them;
+    anything else is the same plain estimate, and is marked as one."""
+    left, bottom, right, top = grid.bounds
+    out, measured = [], 0
+    for wkb, height, floors in rows:
+        try:
+            g = shapely_wkb.loads(wkb)
+        except Exception:  # noqa: BLE001 — one unreadable footprint must not lose the rest
+            continue
+        polys = [g] if g.geom_type == "Polygon" else [p for p in getattr(g, "geoms", []) if p.geom_type == "Polygon"]
+        known = float(height) if height else (float(floors) * METRES_PER_FLOOR if floors else None)
+        measured += known is not None
+        for poly in polys:
+            xs, ys = rio_transform("EPSG:4326", grid.crs, *map(list, zip(*[c[:2] for c in poly.exterior.coords])))
+            ring = [[round((x - left) / (right - left), 5), round((top - y) / (top - bottom), 5)] for x, y in zip(xs, ys)][:-1]
+            if len(ring) < 3 or not all(0 <= u <= 1 and 0 <= v <= 1 for u, v in ring):
+                continue
+            out.append({"ring": ring, "h": round(known or ESTIMATED_BUILDING_M, 1), "estimated": known is None})
+            if len(out) >= MAX_BUILDINGS:
+                return {"buildings": out, "measured": measured, "truncated": True}
+    return {"buildings": out, "measured": measured, "truncated": False}
+
+
+def find_buildings(geom, cache_dir: Path, margin_deg: float | None = None, read=_read_overture_buildings) -> dict[str, Any]:
+    """Building footprints on the terrain square, cached on disk for a month (an empty answer is not kept)."""
+    bbox, grid = _terrain_area(geom, margin_deg)
+    key = "_".join(f"{bbox[k]:.5f}" for k in ("west", "south", "east", "north"))
+    cache = cache_dir / f"buildings_{key}.json"
+    if cache.exists() and datetime.now(UTC).timestamp() - cache.stat().st_mtime < 30 * 86400:
+        return json.loads(cache.read_text(encoding="utf-8"))
+    result = {**parse_buildings(read(bbox), grid), "source": "Overture Maps Foundation (Google Open Buildings, OpenStreetMap, Microsoft)"}
+    if result["buildings"]:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(result), encoding="utf-8")
+    return result
