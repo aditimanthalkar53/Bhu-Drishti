@@ -1,17 +1,13 @@
-"""Maun estimation, the hazard layer and the SIMULATED coverage experiment."""
+"""Maun estimation, its grid and the SIMULATED coverage experiment."""
 
 from __future__ import annotations
 
-import time
-from datetime import date
 
 import numpy as np
 import pytest
 
-from aeqe.hazard import combine, hazard_grid, make_grid
-from aeqe.hazard.adapters import HazardAdapter, HazardCell
-from aeqe.hazard.score import normalise
 from aeqe.maun import MaunSpecError, compute
+from aeqe.maun.grid import make_grid
 from aeqe.maun.oracle import FieldCheckOracle, PendingCheck
 from aeqe.providers.base import TileUniverse
 from maun_sim import coverage, simulate_run, world
@@ -162,49 +158,10 @@ def test_one_simulated_run_converges():
     assert h[-1]["hi"] - h[-1]["lo"] < h[0]["hi"] - h[0]["lo"]
 
 
-# ---------------------------------------------------------------------------- hazard layer
-
-class _Fake(HazardAdapter):
-    def __init__(self, id, values=None, area=False, fail=None, delay=0.0, ok=True):
-        self.id, self.name, self.unit, self.area_level = id, id, "u", area
-        self.values, self.fail, self.delay, self.ok = values or {}, fail, delay, ok
-
-    def configured(self):
-        return (self.ok, "key missing" if not self.ok else "ok")
-
-    def fetch(self, cells, bbox, start: date, end: date):
-        time.sleep(self.delay)
-        if self.fail:
-            raise self.fail
-        return [HazardCell(c.id, self.id, "2026-11-20T10:00:00+00:00", 3600.0, self.values.get(c.id, 0.0), self.unit) for c in cells]
-
+# ---------------------------------------------------------------------------- grid
 
 def test_grid_ids_and_limits():
     g = make_grid((90.0, 26.0, 90.1, 26.05), 0.05)
     assert [c.id for c in g] == ["c000_000", "c000_001"]
     with pytest.raises(ValueError):
         make_grid((0, 0, 10, 10), 0.01)
-
-
-def test_score_is_the_largest_layer_on_published_scales():
-    assert normalise("firms", 6) == 1.0 and normalise("firms", 0) == 0.0 and normalise("imerg", None) is None
-    assert normalise("glofas", 2.0) == 0.5 and normalise("glofas", 0.8) == 0.0, "share of the peak above normal flow"
-    assert normalise("imerg", 115.6) == 1.0 and normalise("rain_forecast", 57.8) == pytest.approx(0.5), "IMD very heavy rainfall"
-    assert normalise("modis_flood", 0.3) == 0.3
-    layers = {"glofas": {"a": HazardCell("a", "glofas", None, None, 4.0, "")}, "rain_forecast": {"a": HazardCell("a", "rain_forecast", None, None, 57.8, "")}}
-    assert combine(layers, ["a", "b"]) == {"a": 0.75, "b": 0.0}, "the largest layer, equal weights"
-
-
-def test_hazard_grid_reports_each_source_state():
-    bbox = (90.0, 26.0, 90.1, 26.1)
-    ads = [_Fake("firms", {"c000_000": 6.0}), _Fake("imerg", ok=False), _Fake("glofas", fail=RuntimeError("boom api_key=SECRET123")),
-           _Fake("modis_flood", delay=2.0)]
-    g = hazard_grid(bbox, 0.05, 3, adapters=ads, timeout_s=0.5, use_cache=False)
-    st = {s["id"]: s for s in g["sources"]}
-    assert st["firms"]["state"] == "ok" and st["firms"]["observed_at"] and st["firms"]["age_s"] > 0
-    assert st["imerg"]["state"] == "not_configured"
-    assert st["glofas"]["state"] == "error" and "SECRET123" not in st["glofas"]["note"]
-    assert st["modis_flood"]["state"] == "timeout"
-    cell = next(c for c in g["cells"] if c["cell_id"] == "c000_000")
-    assert cell["hazard_score"] == 1.0 and "firms" in cell["layers"]
-    assert "equally" in g["score_doc"]

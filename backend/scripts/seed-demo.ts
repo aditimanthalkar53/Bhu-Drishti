@@ -103,7 +103,8 @@ try {
   const cellDeg = 0.025;
   const base = makeGrid(BBOX, cellDeg);
   const counts = countReports(base, await store.listRecords<HelpRequest>("request"));
-  // SIMULATED flood: a river running north-south near 91.0 E; hazard falls with distance from it
+  // SIMULATED flood: a river running north-south near 91.0 E. It is only the hidden truth behind the simulated field
+  // checks below; the model is not shown it, so it has to learn where need is from people and reports, as in real use.
   let seed = 7;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
   const flood = (lat: number, lng: number) => Math.max(0, Math.min(1, 1.1 * Math.exp(-Math.abs(lng - (91.0 + 0.03 * Math.sin((lat - 26.25) * 20))) * 111 / 5) + (rnd() - 0.5) * 0.12));
@@ -116,18 +117,19 @@ try {
     pop = p.population;
     popNote = `Population: ${p.source} (real data)${p.missing.length ? `; ${p.missing.length} cell(s) use the flat fallback` : ""}.`;
   } catch { /* keep the fallback note */ }
+  const flooded = new Map<string, number>();
   const cells: MaunCell[] = base.map((c) => {
     const lat = (c.bbox[1] + c.bbox[3]) / 2, lng = (c.bbox[0] + c.bbox[2]) / 2;
-    const hz = Math.round(flood(lat, lng) * 1000) / 1000;
-    return { ...c, hazard: hz, layers: { simulated_flood: hz }, population: pop[c.id] ?? null, ...counts.get(c.id)!,
+    flooded.set(c.id, flood(lat, lng));
+    return { ...c, population: pop[c.id] ?? null, ...counts.get(c.id)!,
       area: `${lat >= 26.4 ? "North" : "South"}-${lng >= 91.0 ? "east" : "west"}` };
   });
   const run: MaunRun = { id: `maun-demo-${Date.now().toString(36)}`, ownerId: a1.id, createdAt: new Date().toISOString(), name: "Barpeta demo (SIMULATED)", bbox: BBOX, cellDeg,
-    seed: 2026, conf: 0.95, waveSize: 30, cells, waves: [], results: {}, resultMeta: {}, looks: 0, hazardSources: [], simulated: true, observationIds: [], createdBy: a1.id, last: null,
+    seed: 2026, conf: 0.95, waveSize: 30, cells, waves: [], results: {}, resultMeta: {}, looks: 0, simulated: true, createdBy: a1.id, last: null,
     designVersion: 2, regionId: null,
-    notes: ["SIMULATED: hazard scores come from a generated flood field, and the first wave's field checks are simulated counts. Nothing here describes a real event.",
+    notes: ["SIMULATED: the first wave's field checks are counts drawn from a generated flood field. Nothing here describes a real event.",
       popNote, "Reported need counts each demo request in a cell as one household.",
-      "How need relates to hazard, people and reports is learned from the field checks, not assumed."] };
+      "How need relates to people and reports is learned from the field checks, not assumed."] };
   await computeAndStore(store, engine, run, run.waveSize);
   await createTasks(store, run, run.waves[0].cells, a1.id);
   const hh = (c: MaunCell) => (c.population ?? 400 * c.area_km2) / 4.9;
@@ -136,7 +138,7 @@ try {
     const c = cells.find((x) => x.id === cid)!;
     const task = (await store.listRecords<any>("task")).find((t) => t.runId === run.id && t.cellId === cid)!;
     // one cell is unreachable: it stays in the sample (never swapped) and widens the range
-    const result = i === wave1.length - 1 ? { unreachable: true as const } : { households: Math.round(hh(c) * 0.25 * c.hazard ** 1.3 * (0.7 + rnd() * 0.6)) };
+    const result = i === wave1.length - 1 ? { unreachable: true as const } : { households: Math.round(hh(c) * 0.25 * flooded.get(cid)! ** 1.3 * (0.7 + rnd() * 0.6)) };
     await recordFieldCheck(store, engine, { id: task.id, runId: run.id, cellId: cid, claimedBy: i % 2 ? v1.id : v2.id }, result, i % 2 ? v1.id : v2.id);
     await store.putRecord("task", { ...task, status: "unreachable" in result ? "unreachable" : "done", claimedBy: i % 2 ? v1.id : v2.id,
       claimedByName: i % 2 ? "Demo · Rina (volunteer)" : "Demo · Imran (volunteer)", completedAt: new Date().toISOString(),

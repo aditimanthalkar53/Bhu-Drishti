@@ -27,7 +27,6 @@ POST /detections                     start a two-date change detection for a dis
 GET  /detections/{id}                progress steps, then the result (areas, polygons, evidence, risk)
 GET  /detections/{id}/overlays/{f}   PNG map overlay (before / after / change)
 DELETE /detections/{id}              remove a finished analysis and its files
-POST /hazard/grid                    combined hazard layer (FIRMS, IMERG, MODIS flood, GloFAS, rain forecast) per grid cell
 POST /maun/population                people per grid cell from the HRSL 30 m population raster
 POST /maun/compute                   Maun need estimate from a stored run record (deterministic replay)
 """
@@ -111,6 +110,16 @@ app.add_middleware(CORSMiddleware, allow_origins=_cors, allow_methods=["GET", "P
 def _startup() -> None:
     logging.basicConfig(level=logging.INFO)
     _config_report()
+    # load (and on first run download) the speech model in the background, so the first voice message is not slow
+    from . import speech
+    if speech.available() and os.getenv("WHISPER_PRELOAD", "1") != "0":
+        def _warm() -> None:
+            try:
+                speech._get_model()
+                logging.getLogger("aeqe.speech").info("speech model %s ready", speech.MODEL)
+            except Exception:
+                logging.getLogger("aeqe.speech").exception("speech model %s could not be loaded", speech.MODEL)
+        threading.Thread(target=_warm, name="whisper-warmup", daemon=True).start()
 
 
 class CompileRequest(BaseModel):
@@ -181,6 +190,32 @@ def health():
     return {"ok": True, "version": __version__, "provider": provider.name,
             "live_data": _live() is not None, "sequential": engine.config.sequential,
             "compiler": llm.name if llm.enabled else "rules", "time": time.time()}
+
+
+@app.get("/speech/status")
+def speech_status():
+    from . import speech
+    return {"available": speech.available(), "model": speech.MODEL, "loaded": speech.loaded(), "languages": speech.LANGUAGES}
+
+
+@app.post("/speech/transcribe")
+async def speech_transcribe(request: Request, language: str = ""):
+    """Raw audio in the body (webm/opus, ogg, mp4, wav); returns the text and the language Whisper detected."""
+    from . import speech
+    if not speech.available():
+        raise HTTPException(503, "speech-to-text is not installed on the engine (pip install faster-whisper)")
+    audio = await request.body()
+    if not audio:
+        raise HTTPException(400, "no audio received")
+    if len(audio) > 25 * 1024 * 1024:
+        raise HTTPException(413, "recording too large")
+    if language and not re.fullmatch(r"[a-z]{2,3}", language):
+        raise HTTPException(400, "language must be an ISO 639 code such as hi")
+    try:
+        return await asyncio.to_thread(speech.transcribe, audio, language or None)
+    except Exception as e:  # undecodable audio, model download failure, …
+        logging.getLogger("aeqe.speech").exception("transcription failed")
+        raise HTTPException(422, f"could not transcribe the recording: {e}") from e
 
 
 @app.get("/regions")
@@ -527,25 +562,6 @@ def cache_clear():
 
 
 # ---------------------------------------------------------------------------- disaster coordination (Maun)
-
-class HazardRequest(BaseModel):
-    bbox: list[float]
-    cell_deg: float = 0.05
-    days: int = 3
-
-
-@app.post("/hazard/grid")
-def hazard_grid(req: HazardRequest):
-    """Combined hazard layer for an area: every source's cells, its freshness, and one documented score per cell."""
-    from .hazard import hazard_grid as grid
-
-    if len(req.bbox) != 4:
-        raise HTTPException(422, "bbox must be [west, south, east, north]")
-    try:
-        return grid(req.bbox, req.cell_deg, max(1, min(req.days, 7)))
-    except ValueError as e:
-        raise HTTPException(422, str(e)) from e
-
 
 class CellsRequest(BaseModel):
     cells: list[dict[str, Any]]

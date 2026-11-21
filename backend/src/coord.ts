@@ -6,8 +6,8 @@ import { confidenceOf, fitConfidence, haversineM, notifyAuthorities, now, OFFER_
 import type { Report } from "./domain.js";
 import { sendMail, smtpConfigured } from "./email.js";
 import type { EngineClient } from "./engine-client.js";
-import { hazardAt } from "./hazard/index.js";
 import { recordFieldCheck } from "./maun.js";
+import { detectLanguage, runIntake } from "./intake.js";
 import { RateLimiter } from "./ratelimit.js";
 import { guard, type Profile } from "./roles.js";
 import type { Store } from "./store/types.js";
@@ -15,6 +15,9 @@ import type { Store } from "./store/types.js";
 type IdParams = { Params: { id: string } };
 
 /** SOS: at most 3 new ones per user in 10 minutes (retries of the same SOS do not count). */
+
+/** Language of a citizen's own words when the client did not say: detected, never asked for. */
+const languageOf = (text: string | null) => { const l = text ? detectLanguage(text) : "und"; return l === "und" ? null : l; };
 export const sosLimiter = new RateLimiter(3, 10 * 60_000);
 const requestLimiter = new RateLimiter(30, 60 * 60_000);
 const offerLimiter = new RateLimiter(30, 60 * 60_000);
@@ -44,7 +47,7 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
     return r;
   }
 
-  const withConfidence = (r: HelpRequest, all: HelpRequest[], model = fitConfidence(all, hazardAt)) => ({ ...r, confidence: confidenceOf(r, all, hazardAt, model) });
+  const withConfidence = (r: HelpRequest, all: HelpRequest[], model = fitConfidence(all)) => ({ ...r, confidence: confidenceOf(r, all, model) });
 
   // ------------------------------------------------------------------ requests (ask for help, SOS)
   app.post<{ Body: Partial<HelpRequest> & { clientId?: string } }>("/api/requests", {
@@ -85,7 +88,7 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
       id, ownerId: uid, createdAt: now(),
       type: (source === "sos" ? b.type ?? "rescue" : b.type ?? "other") as RequestType,
       description: description || (source === "sos" ? "SOS: help needed (no text)" : originalText ?? ""),
-      originalText, originalLanguage: clip(b.originalLanguage, 10) || null, summaryEn: clip(b.summaryEn, 1000) || null,
+      originalText, originalLanguage: clip(b.originalLanguage, 10) || languageOf(originalText), summaryEn: clip(b.summaryEn, 1000) || null,
       needs: (b.needs ?? []).map((n) => clip(n, 60)).filter(Boolean),
       lat: hasLoc ? b.lat! : null, lng: hasLoc ? b.lng! : null,
       accuracyM: hasLoc && typeof b.accuracyM === "number" ? Math.round(b.accuracyM) : null,
@@ -97,6 +100,8 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
       history: [{ at: now(), by: uid, action: "created", detail: { source } }],
     };
     await store.putRecord("request", r);
+    // "Send as it is": the citizen did not wait for the model, so it reads the text now, in the background
+    if (source === "local_language" && !r.intake && originalText) void readLater(r.id, originalText, profile.displayName);
     await audit(store, uid, uid, `request.create`, `request:${r.id}`, { source, type: r.type, severity: r.severity, flags }, profile.displayName);
     if (source === "sos") {
       await notifyAuthorities(store, roles, `SOS${flags.includes("repeated") ? " (repeated)" : ""}: ${profile.displayName}`,
@@ -108,13 +113,41 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
     return reply.code(201).send(r);
   });
 
+  /**
+   * Fill in what the model reads from a request the citizen sent without waiting for it. Only adds: the English summary
+   * and needs when missing, the type when the citizen left it as "other", and the urgency only upwards (a model must
+   * never make a request look less urgent than the person said). Never throws; the request stands without it.
+   */
+  async function readLater(id: string, text: string, who: string) {
+    try {
+      const res = await runIntake(text);
+      if (!res.ok) return;
+      const d = res.draft;
+      const cur = await store.getRecord<HelpRequest>("request", id);
+      if (!cur || cur.intake) return;
+      const severity = Math.max(cur.severity, d.severity) as HelpRequest["severity"];
+      const next: HelpRequest = {
+        ...cur, summaryEn: cur.summaryEn ?? d.summary_en, needs: cur.needs.length ? cur.needs : d.needs,
+        type: cur.type === "other" ? d.type : cur.type, severity, originalLanguage: cur.originalLanguage ?? (d.language === "und" ? null : d.language),
+        area: cur.area ?? (d.location_hint || null),
+        intake: { provider: res.provider, confidence: d.confidence, edited: false },
+        history: [...cur.history, { at: now(), by: "system", action: "read_by_model", detail: { type: d.type, severity: d.severity } }],
+      };
+      await store.putRecord("request", next);
+      if (severity >= 3 && cur.severity < 3) {
+        await notifyAuthorities(store, roles, `New ${severity === 4 ? "critical" : "high-severity"} request: ${next.type.replace(/_/g, " ")}`,
+          `${who}: ${(next.summaryEn || next.description).slice(0, 200)}`, severity === 4 ? "critical" : "warning", `/app/requests?open=${id}`);
+      }
+    } catch { /* the reading is optional */ }
+  }
+
   app.get<{ Querystring: { mine?: string; status?: string; source?: string; sort?: string } }>("/api/requests", anyone, async (req) => {
     const all = await store.listRecords<HelpRequest>("request");
     const own = req.role !== "authority" || req.query.mine === "1";
     let list = own ? all.filter((r) => r.ownerId === req.userId) : all;
     if (req.query.status) list = list.filter((r) => r.status === req.query.status);
     if (req.query.source) list = list.filter((r) => r.source === req.query.source);
-    const model = fitConfidence(all, hazardAt);       // learned once per listing from the authorities' decisions
+    const model = fitConfidence(all);       // learned once per listing from the authorities' decisions
     const out = list.map((r) => withConfidence(r, all, model));
     if (req.query.sort === "priority") out.sort((a, b) => b.severity * b.confidence.score - a.severity * a.confidence.score || b.createdAt.localeCompare(a.createdAt));
     else out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));

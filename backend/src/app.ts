@@ -21,7 +21,6 @@ import { webRoutes } from "./web.js";
 import { coordRoutes } from "./coord.js";
 import { drainRoutes } from "./drain.js";
 import { registerFeatureFlags } from "./featureFlags.js";
-import { hazardRoutes } from "./hazard/index.js";
 import { intakeRoutes } from "./intake.js";
 import { maunRoutes } from "./maun.js";
 import { profileRoutes, Roles } from "./roles.js";
@@ -49,11 +48,10 @@ export async function buildApp(config: Config, opts: { store?: Store; logger?: b
   authRoutes(app, store, { allowGuest: config.allowGuest, appUrl: config.appUrl });
   profileRoutes(app, store);
   const engine = new EngineClient(config.engineUrl);
-  // disaster coordination: requests, offers, official updates, tasks, local-language intake, Drain Watch, hazard, Maun
+  // disaster coordination: requests, offers, official updates, tasks, local-language intake, Drain Watch, Maun
   coordRoutes(app, store, engine, { appUrl: config.appUrl });
-  intakeRoutes(app);
+  intakeRoutes(app, engine);
   drainRoutes(app, store, { uploadsDir: config.uploadsDir, appUrl: config.appUrl, authorityEmail: config.drainAuthorityEmail, wardEmails: config.drainWardEmails });
-  hazardRoutes(app, store, engine);
   maunRoutes(app, store, engine);
   app.get("/api/edition", async () => ({ featureMode: config.featureMode }));
   appRoutes(app, store, engine, { maxConcurrentRuns: config.maxConcurrentRuns });

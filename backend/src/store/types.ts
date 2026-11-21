@@ -51,7 +51,6 @@ export type RecordKind =
   // disaster coordination (Maun)
   | "profile"     // role, ward, language, skills (id = user id)
   | "request" | "offer" | "update" | "task" | "match"
-  | "observation" // "please observe these cells more sharply" requests
   | "maun_run";   // an estimation run: cells, waves, field-check results
 
 export interface StoredRecord {

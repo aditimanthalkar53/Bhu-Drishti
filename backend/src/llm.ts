@@ -62,7 +62,10 @@ export async function chatJson(cfg: LlmConfig, system: string, user: string, ima
   const model = cfg.model!;
   if (cfg.provider === "ollama") {
     const r = await postJson(`${cfg.baseUrl ?? "http://127.0.0.1:11434"}/api/chat`, {}, {
-      model, stream: false, format: "json", options: { temperature: 0 },
+      // think:false — reasoning models (Gemma 4, Qwen 3…) otherwise think privately first: ~5x slower on CPU for a short JSON reply.
+      // keep_alive — Ollama unloads an idle model after 5 minutes, and reloading costs ~15 s on the next citizen's request.
+      model, stream: false, format: "json", think: false, keep_alive: process.env.OLLAMA_KEEP_ALIVE || "24h",
+      options: { temperature: 0, num_predict: 600 },
       messages: [{ role: "system", content: system }, { role: "user", content: user, ...(images.length ? { images: images.map((i) => i.base64) } : {}) }],
     }, cfg.timeoutMs);
     return extractJson(String(r?.message?.content ?? ""));

@@ -61,8 +61,8 @@ simulates how the structure behaves, its shape and height are not modelled, and 
 ### Roles
 | Role | How you get it | Sees |
 |---|---|---|
-| Citizen | chosen at sign-up (default; existing accounts become citizens) | Ask for help (SOS, own words), My requests, Offer help, Drain Watch, Updates, SACHET alerts, Hazard map |
-| Volunteer | chosen at sign-up or in Settings | Tasks, Ask for help, Offer help, Updates, Hazard map |
+| Citizen | chosen at sign-up (default; existing accounts become citizens) | Ask for help (SOS, own words), My requests, Offer help, Drain Watch, Updates, SACHET alerts |
+| Volunteer | chosen at sign-up or in Settings | Tasks, Ask for help, Offer help, Updates |
 | Authority | **never self-assigned**: listed in `AUTHORITY_EMAILS`, or granted by an allow-listed authority on the People page | Command view, Requests, Offers, Tasks, Volunteers, Silent zones, Estimates, Updates/bulletins, Reports, Recipients, Audit log, Data sources |
 
 The role lives in a `profile` record (no change to the users table), travels in the JWT for the website, and is re-read
@@ -83,8 +83,8 @@ on every role-guarded request, so removing an authority takes effect immediately
   A report within 30 m of an open one of the same category from the last 7 days becomes a "+1 confirmation".
 - **Requests:**
   - Statuses: new → verified → assigned → in progress → resolved (or cancelled).
-  - Sorting: by severity × confidence. Confidence comes from three pieces of evidence: nearby reports from other people,
-    the hazard layer and the reporter's history. How much each counts is **learned** by logistic regression from what
+  - Sorting: by severity × confidence. Confidence comes from two pieces of evidence: nearby reports from other people
+    and the reporter's history. How much each counts is **learned** by logistic regression from what
     authorities decided (verified or acted on vs cancelled), once there are 30 such decisions; before that it is a plain
     average with no weights. Low confidence never hides a request.
 - **Offers and matches:** offers (boat, vehicle, food, water, shelter, medical, labour) are ordered for a request by
@@ -93,29 +93,14 @@ on every role-guarded request, so removing an authority takes effect immediately
 - **Official updates:** one authority drafts, a **second** approves (the author cannot), then the update is published to
   the Updates feed and emailed to the chosen recipient groups. Every delivery and step is in the audit log. Bulletins are
   coordination messages; official warnings are shown from NDMA SACHET.
-- **Hazard map (virtual constellation):** we no longer analyse imagery for this edition. `engine/aeqe/hazard/` reads the
-  following independent products, each through the existing source clients (retries, key redaction, status ladder):
-  - NASA FIRMS fires;
-  - GPM IMERG rainfall (area-level);
-  - the MODIS NRT flood product (area-level);
-  - GloFAS river discharge and the Open-Meteo rain forecast, both labelled as forecasts.
-
-  Each source shows when it last observed, its delay after observation, or "not configured". Nothing claims continuous
-  coverage. `hazard_score` per cell is the largest of the available layers, all weighted equally, each on a published
-  or scale-free 0–1 scale: MODIS flooded share; FIRMS fire present; wettest day ÷ 115.6 mm (IMD "very heavy rainfall");
-  GloFAS share of the forecast peak above normal flow (see `score.py`). It is used for the map, strata and request
-  ranking only; Maun learns each layer's real effect from field checks.
-- **Sharper observation:** an `ObservationRequest` asks for sharper imagery over chosen cells. We cannot task real
-  satellites, so the only adapter is **SIMULATED** (`SimulatedObservationAdapter` in `backend/src/hazard/index.ts`) and
-  says so everywhere. A real provider implements the same `ObservationAdapter` interface.
 - **Maun estimates** (`engine/aeqe/maun/`; AEQE's estimators are called, not changed):
   - **Area:** a district (cells are kept inside its boundary) or a map view, split into grid cells.
   - **Data per cell:** people from the **HRSL 30 m population map** (zonal sums; a cell that cannot be read is flagged
-    and uses a flat fallback), each hazard layer separately, and the reports already received.
-  - **Nothing about need is assumed:** the cross-fitted model learns from the field checks how need relates to each
-    hazard layer, people and reports.
+    and uses a flat fallback) and the reports already received.
+  - **Nothing about need is assumed:** the cross-fitted model learns from the field checks how need relates to people
+    and reports.
   - **Strata:** the existing six strata over a design score with no weights (the average percentile rank of
-    households exposed to the hazard and of reports). The design only decides which cells are checked; it cannot bias
+    exposed households and of reports; runs created without a hazard layer group by reports). The design only decides which cells are checked; it cannot bias
     the estimate.
   - **Selection:** volunteers check randomly chosen cells, allocated by sequential Neyman allocation with a pilot of 3
     per stratum.
@@ -123,7 +108,7 @@ on every role-guarded request, so removing an authority takes effect immediately
     output is reported need, estimated true need, the 95% range and the hidden need (true minus reported), overall and
     per area.
   - **Unreachable cells** are never swapped for easier ones. They stay in the sample, the range is widened to cover
-    both no need and every household in need there, and they are flagged and sent for sharper observation.
+    both no need and every household in need there, and they are flagged.
   - **Reporting rate** is learned: reports ÷ measured need over the checked cells, with a 95% interval, overall and per
     stratum.
   - **Silent zones** come from data, not thresholds:
@@ -132,7 +117,6 @@ on every role-guarded request, so removing an authority takes effect immediately
       residual spread (or, before 30 checks, the measured gap in similar checked cells), with false discoveries held at
       10% (Benjamini-Hochberg);
     - cells where reports stopped: a Poisson test of no reports in the last 24 h given the 48 h before.
-    Before any check, nothing is flagged on hazard alone.
   - **Storage:** the run (cells, seed, each wave's allocation, results) is stored in the backend and the engine replays
     it deterministically, so restarts lose nothing.
   - **Live updates:** the estimate updates live over Server-Sent Events.
@@ -164,7 +148,7 @@ All of it is labelled demo / SIMULATED.
 ### Environment
 `FEATURE_MODE` (backend) / `VITE_FEATURE_MODE` (website, build time) = `full` (default, everything) or `disaster`; `AUTHORITY_EMAILS`;
 `INTAKE_PROVIDER/MODEL/API_KEY/BASE_URL`; `VISION_PROVIDER/MODEL/API_KEY/BASE_URL`; `DRAIN_AUTHORITY_EMAIL`,
-`DRAIN_WARD_EMAILS`; `UPLOADS_DIR`; `OBS_SIM_DELAY_S`. Model keys stay on the server.
+`DRAIN_WARD_EMAILS`; `UPLOADS_DIR`; `WHISPER_*` (voice messages). Model keys stay on the server.
 
 **Hidden only in the optional disaster edition** (code kept; API answers 404, pages redirect to the dashboard):
 - the Drift Simulator, Explore (the satellite question compiler) and its new questions about flooded or burned cropland,
@@ -178,11 +162,10 @@ In the default `full` edition all of these stay visible, next to the coordinatio
 
 ### Limitations
 - Web only, and it needs connectivity.
-- Hazard freshness varies by source, and forecasts are not observations.
-- The sharper-observation adapter is simulated.
 - The Maun range covers sampling error only. Population comes from the HRSL map (2018–2020 inputs), which is not
   validated against a census here.
-- Browser speech recognition depends on the browser and language.
+- Voice messages are transcribed on the server with Whisper "small": good for English and Hindi, weaker for Kannada and
+  Assamese (set `WHISPER_MODEL=medium` for better accuracy at about 3× the time).
 
 **Future work (not built):** offline/PWA, SMS gateway, phone-to-phone relay, real satellite tasking, face/plate blurring,
 chat, donations.

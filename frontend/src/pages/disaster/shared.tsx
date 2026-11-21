@@ -17,7 +17,7 @@ export interface HelpRequest {
   intake?: { provider: string; confidence: number | null; edited: boolean } | null;
   drain?: { category: string; categorySource: "citizen" | "ai"; photos: string[]; vision: { provider: string; category: string; confidence: number; description: string } | null;
     confirmations: { at: string; photos: string[] }[]; forwarded: { to: string | null; status: string; at: string | null; error?: string | null } } | null;
-  confidence?: { score: number; factors: { corroboration: number; hazard: number | null; reporter: number }; method: "learned" | "unweighted" };
+  confidence?: { score: number; factors: { corroboration: number; reporter: number }; method: "learned" | "unweighted" };
   history: { at: string; action: string }[];
 }
 export interface Offer {
@@ -29,11 +29,8 @@ export interface Task {
   requestId: string | null; runId: string | null; cellId: string | null; lat: number | null; lng: number | null;
   status: "open" | "claimed" | "done" | "unreachable" | "cancelled"; claimedBy: string | null; claimedByName: string | null; note: string | null; result: Record<string, unknown> | null;
 }
-export interface HazardCell { cell_id: string; bbox: [number, number, number, number]; hazard_score: number; layers: Record<string, { value: number | null; norm: number | null; unit: string; observed_at: string | null }> }
-export interface HazardSource { id: string; name: string; state: string; observed_at: string | null; age_s: number | null; latency_s: number | null; note: string; area_level?: boolean; kind?: string }
-export interface HazardGrid { bbox: [number, number, number, number] | null; cells: HazardCell[]; sources: HazardSource[]; score_doc?: string; generated_at?: string }
 export interface SilentZone {
-  id: string; bbox: [number, number, number, number] | null; hazard: number; reported: number; reason: string; status: string; action: string;
+  id: string; bbox: [number, number, number, number] | null; reported: number; reason: string; status: string; action: string;
   /** estimated or observed households in need beyond reports */
   estimated_gap: number | null;
   /** one-sided test p-value (Benjamini-Hochberg controlled); null for directly observed gaps */
@@ -54,7 +51,13 @@ export const OFFER_LABEL: Record<string, string> = {
 };
 export const SEVERITY_LABEL: Record<number, string> = { 1: "Can wait", 2: "Today", 3: "Urgent", 4: "Life in danger" };
 export const LANGUAGES: Record<string, string> = { en: "English", hi: "हिन्दी", kn: "ಕನ್ನಡ", as: "অসমীয়া" };
-export const SPEECH_LANG: Record<string, string> = { en: "en-IN", hi: "hi-IN", kn: "kn-IN", as: "as-IN" };
+
+/** A detected language code as its speakers write it (e.g. "bn" → "বাংলা"); the code itself if the browser has no name for it. */
+export function languageName(code: string | null | undefined): string | null {
+  if (!code || code === "und") return null;
+  if (LANGUAGES[code]) return LANGUAGES[code];
+  try { return new Intl.DisplayNames([code], { type: "language" }).of(code) ?? code; } catch { return code; }
+}
 
 export const sevTone = (s: number) => (s >= 4 ? "error" : s === 3 ? "warn" : s === 2 ? "info" : "muted") as "error" | "warn" | "info" | "muted";
 export const statusTone = (s: string) =>
@@ -68,7 +71,7 @@ export function Status({ s }: { s: string }) {
 }
 
 export const sevColor = (s: number) => cssVar(s >= 4 ? "--error" : s === 3 ? "--ochre" : s === 2 ? "--water" : "--muted");
-/** 0..1 → a colour from pale yellow to deep red (hazard and need maps). */
+/** 0..1 → a colour from pale yellow to deep red (need maps). */
 export function heat(v: number): string {
   const x = Math.max(0, Math.min(1, v));
   const h = 55 - 55 * x, l = 70 - 30 * x;
@@ -178,23 +181,6 @@ function Ready({ onReady }: { onReady(m: LeafletMap): void }) {
   const map = useMap();
   useEffect(() => onReady(map), [map, onReady]);
   return null;
-}
-
-export function HazardCells({ cells, layer = "combined", opacity = 0.45 }: { cells: HazardCell[]; layer?: string; opacity?: number }) {
-  return (
-    <>
-      {cells.map((c) => {
-        const v = layer === "combined" ? c.hazard_score : c.layers[layer]?.norm ?? null;
-        if (v == null || v <= 0.02) return null;
-        const b = c.bbox;
-        return (
-          <Rectangle key={c.cell_id} bounds={[[b[1], b[0]], [b[3], b[2]]]} pathOptions={{ stroke: false, fillColor: heat(v), fillOpacity: opacity * (0.4 + 0.6 * v) }}>
-            <Tooltip>{c.cell_id}: hazard {c.hazard_score.toFixed(2)}{Object.entries(c.layers).map(([k, l]) => ` · ${k} ${l.value ?? "–"} ${l.unit}`).join("")}</Tooltip>
-          </Rectangle>
-        );
-      })}
-    </>
-  );
 }
 
 export function SilentCells({ zones }: { zones: SilentZone[] }) {

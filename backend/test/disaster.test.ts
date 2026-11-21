@@ -9,24 +9,17 @@ import { loadConfig, parseWardEmails } from "../src/config.js";
 import { confidenceOf, fitConfidence, type HelpRequest } from "../src/disaster.js";
 import { isHidden } from "../src/featureFlags.js";
 import { cleanImage, sniffImage, stripJpeg, stripPng } from "../src/images.js";
-import { runIntake, validateIntake } from "../src/intake.js";
+import { audioBytes, detectLanguage, runIntake, validateIntake } from "../src/intake.js";
 import { extractJson, llmConfig } from "../src/llm.js";
 import { countReports, makeGrid } from "../src/maun.js";
 import type { Store } from "../src/store/types.js";
 import { analysePhoto, validateVision } from "../src/vision.js";
 
-// ---------------------------------------------------------------- a fake engine for hazard + Maun
+// ---------------------------------------------------------------- a fake engine for Maun
 let computeCalls: any[] = [];
 async function fakeEngine(): Promise<FastifyInstance> {
   const f = Fastify();
   f.get("/health", async () => ({ ok: true }));
-  f.post("/hazard/grid", async (req: any) => ({
-    bbox: req.body.bbox, cell_deg: req.body.cell_deg, generated_at: "2026-11-21T00:00:00Z", score_doc: "max of weighted layers",
-    cells: makeGrid(req.body.bbox, req.body.cell_deg).map((c, i) => ({ cell_id: c.id, bbox: c.bbox, hazard_score: i % 2 ? 0.8 : 0.1,
-      layers: { glofas: { value: 5, norm: i % 2 ? 0.8 : 0.1, unit: "ratio", observed_at: null }, firms: { value: 0, norm: null, unit: "detections", observed_at: null } } })),
-    sources: [{ id: "firms", name: "FIRMS", state: "ok", observed_at: "2026-11-20T10:00:00Z", age_s: 3600, latency_s: 10800, note: "" },
-      { id: "imerg", name: "IMERG", state: "not_configured", observed_at: null, age_s: null, latency_s: null, note: "EARTHDATA_TOKEN missing" }],
-  }));
   f.post("/maun/population", async (req: any) => {
     const cells = req.body.cells as { id: string }[];
     return { population: Object.fromEntries(cells.slice(1).map((c, i) => [c.id, 1000 + i])), missing: [cells[0].id], source: "HRSL (fake)", errors: [] };
@@ -45,7 +38,7 @@ async function fakeEngine(): Promise<FastifyInstance> {
     const done = Object.keys(s.results).length;
     return { status: done >= 3 ? "estimating" : "collecting", overall: done >= 3 ? { estimate: 10, lo: 5, hi: 15, reported: 2, hidden: 8, method: "stratified" } : null,
       new_wave: nw, pending, unreachable: Object.keys(s.results).filter((k) => s.results[k].unreachable), checks_done: done, cells: [], strata: [], waves: [],
-      silent_zones: [{ id: s.cells[1].id, reason: "high hazard, no reports", action: "send a team" }], observation_suggestion: { stratum: 0, reason: "widest", cells: [s.cells[5].id] },
+      silent_zones: [{ id: s.cells[1].id, reason: "many people, no reports", action: "send a team" }], observation_suggestion: { stratum: 0, reason: "widest", cells: [s.cells[5].id] },
       trace: [{ step: "design" }] };
   });
   await f.listen({ port: 0, host: "127.0.0.1" });
@@ -236,8 +229,14 @@ test("official updates need a second authority before they are published", async
 test("intake and vision fall back cleanly without a model, and validate model output strictly", async () => {
   const none = llmConfig("INTAKE", {});
   assert.equal(none.provider, "none");
-  const r = await runIntake("पानी घर में घुस गया है", "hi", none);
+  const r = await runIntake("पानी घर में घुस गया है", undefined, none);
   assert.equal(r.ok, false);
+  assert.equal(r.language, "hi", "without a model the language still comes from the script, unasked");
+  assert.deepEqual(
+    ["Water entered our house", "ನಮ್ಮ ಮನೆಗೆ ನೀರು ನುಗ್ಗಿದೆ", "আমাৰ ঘৰত পানী সোমাইছে", "আমাদের বাড়িতে জল ঢুকেছে", "12 / 3 !!"].map(detectLanguage),
+    ["en", "kn", "as", "bn", "und"]);
+  assert.equal(validateIntake({ type: "rescue", summary_en: "x", language: "KN" })?.language, "kn");
+  assert.equal(validateIntake({ type: "rescue", summary_en: "x", language: "Kannada!" }, "hi")?.language, "hi", "malformed language falls back");
   const keyless = await runIntake("help", "en", llmConfig("INTAKE", { INTAKE_PROVIDER: "anthropic" }));
   assert.equal(keyless.ok, false);
   const v = await analysePhoto({ mime: "image/jpeg", base64: "" }, llmConfig("VISION", {}));
@@ -250,8 +249,20 @@ test("intake and vision fall back cleanly without a model, and validate model ou
   assert.equal(validateVision({ category: "car" }), null);
   assert.deepEqual(extractJson('Sure! ```json\n{"a":1}\n```'), { a: 1 });
   const s = await signup(app, "intake@x.example");
-  const res = await app.inject({ method: "POST", url: "/api/intake", headers: s.h, payload: { text: "Water entered our house", language: "en" } });
+  const res = await app.inject({ method: "POST", url: "/api/intake", headers: s.h, payload: { text: "Water entered our house" } });
   assert.equal(res.json().ok, false, "no INTAKE_PROVIDER in tests: the citizen picks the type by hand");
+  assert.equal(res.json().language, "en", "no language has to be sent; it is detected");
+  // voice messages: recordings are checked before anything reaches the engine
+  const clip = Buffer.alloc(400, 7);
+  assert.equal(audioBytes(`data:audio/webm;codecs=opus;base64,${clip.toString("base64")}`)?.length, 400);
+  assert.equal(audioBytes(clip.toString("base64"))?.length, 400);
+  assert.equal(audioBytes(`data:image/png;base64,${clip.toString("base64")}`), null, "only audio");
+  assert.equal(audioBytes("not base64 !!"), null);
+  assert.equal(audioBytes(Buffer.alloc(10).toString("base64")), null, "too short to be a recording");
+  const bad = await app.inject({ method: "POST", url: "/api/speech", headers: s.h, payload: { audio: "data:image/png;base64,AAAA" } });
+  assert.equal(bad.statusCode, 400);
+  const anon = await app.inject({ method: "POST", url: "/api/speech", payload: { audio: clip.toString("base64") } });
+  assert.equal(anon.statusCode, 401, "voice input needs an account, like every other request");
 });
 
 // ---------------------------------------------------------------- images, Drain Watch
@@ -308,20 +319,8 @@ test("Drain Watch: stored without metadata, private, PDF, needs a category witho
   assert.equal((await app.inject({ method: "POST", url: "/api/drain", headers: s.h, payload: { photos: [`data:image/jpeg;base64,${big}`], lat: 26.3, lng: 91.0, category: "other" } })).statusCode, 400);
 });
 
-// ---------------------------------------------------------------- hazard, observations and Maun
-test("hazard layer relays per-source freshness; observation requests are labelled SIMULATED", async () => {
-  const boss = A1;
-  assert.equal((await app.inject({ url: "/api/hazard?bbox=1,2,3", headers: boss })).statusCode, 400);
-  const g = (await app.inject({ url: "/api/hazard?bbox=90.9,26.2,91.0,26.3&cell=0.05", headers: boss })).json();
-  assert.equal(g.sources.find((s: any) => s.id === "imerg").state, "not_configured");
-  const o = (await app.inject({ method: "POST", url: "/api/observations", headers: boss, payload: { cellIds: ["c000_000"], priority: "high" } })).json();
-  assert.equal(o.simulated, true);
-  assert.match(o.note, /SIMULATED/);
-  const cit = await signup(app, "obs@x.example");
-  assert.equal((await app.inject({ method: "POST", url: "/api/observations", headers: cit.h, payload: { cellIds: ["c000_000"] } })).statusCode, 403);
-});
-
-test("Maun run: cells get reports and hazard, field-check tasks are created, results flow to the engine, outsiders refused", async () => {
+// ---------------------------------------------------------------- Maun
+test("Maun run: cells get reports and people, field-check tasks are created, results flow to the engine, outsiders refused", async () => {
   const boss = A1;
   const vol = await signup(app, "checker@x.example", { role: "volunteer" });
   computeCalls = [];
@@ -329,9 +328,8 @@ test("Maun run: cells get reports and hazard, field-check tasks are created, res
   assert.equal(run.statusCode, 201, run.body);
   const id = run.json().id;
   assert.equal(run.json().cellCount, 16);
-  assert.ok(computeCalls[0].cells.some((c: any) => c.hazard === 0.8), "hazard from the hazard layer");
+  assert.ok(computeCalls[0].cells.every((c: any) => c.hazard === undefined && c.layers === undefined), "no hazard layer: cells carry people and reports only");
   assert.equal(computeCalls[0].design_version, 2, "new runs use data-driven strata");
-  assert.deepEqual(computeCalls[0].cells[1].layers, { glofas: 0.8 }, "each hazard layer goes to the model separately (no data: left out)");
   assert.equal(computeCalls[0].cells[0].population, null, "a cell the raster could not read is marked, not guessed");
   assert.equal(computeCalls[0].cells[1].population, 1000);
   assert.ok(run.json().notes.some((n: string) => n.includes("HRSL (fake)") && n.includes("1 cell(s) could not be read")));
@@ -355,7 +353,6 @@ test("Maun run: cells get reports and hazard, field-check tasks are created, res
   assert.equal(last.looks, 3, "every entered result is a look for alpha spending");
   const detail = (await app.inject({ url: `/api/maun/runs/${id}`, headers: boss })).json();
   assert.equal(detail.last.status, "estimating");
-  assert.ok(detail.observationIds.length >= 1, "a finished wave asks for sharper observation where the range is widest");
   const sz = (await app.inject({ url: "/api/maun/silent-zones", headers: boss })).json();
   assert.equal(sz.zones.length, 1);
   assert.equal((await app.inject({ url: "/api/maun/runs", headers: vol.h })).statusCode, 403);
@@ -380,22 +377,25 @@ test("helpers: ward emails, grid ids match the engine, report counting, confiden
   const reqs = [mk("a", "u1", 26.01, 1), mk("b", "u2", 26.0101, 30), mk("c", "u3", 26.01, 1, "cancelled")];
   const counts = countReports(g, reqs);
   assert.deepEqual(counts.get("c000_000"), { reported: 2, reported_recent: 1, reported_earlier: 1 });
-  const conf = confidenceOf(reqs[0], reqs, () => 0.9);
+  const conf = confidenceOf(reqs[0], reqs);
   assert.ok(conf.score > 0 && conf.score <= 1 && conf.factors.corroboration === 0, "the other report is 29 h away: no corroboration");
-  assert.equal(confidenceOf(reqs[0], [...reqs, mk("d", "u4", 26.0102, 2)], () => null).factors.hazard, null);
+  assert.equal(confidenceOf(reqs[0], [...reqs, mk("d", "u4", 26.0102, 2)]).factors.corroboration, 0.5, "one other person nearby within a day");
   assert.equal(conf.method, "unweighted", "too few authority decisions to learn from");
 });
 
 test("request confidence is learned from authorities' decisions once there are enough", () => {
-  // authorities verified requests where the hazard layer showed danger and cancelled those where it did not
-  const mk = (i: number, status: string, lat: number) => ({ id: `r${i}`, ownerId: `u${i}`, lat, lng: 90 + i * 0.01, status, flags: [],
-    createdAt: new Date(Date.now() - i * 3 * 86400_000).toISOString() }) as unknown as HelpRequest;
-  const hazardAt = (lat: number) => (lat > 26.5 ? 0.9 : 0.1);
-  const all = [...Array.from({ length: 20 }, (_, i) => mk(i, "verified", 26.8)), ...Array.from({ length: 20 }, (_, i) => mk(100 + i, "cancelled", 26.2))];
-  assert.equal(fitConfidence(all.slice(0, 25), hazardAt), null, "fewer than 5 of one kind: no model");
-  const model = fitConfidence(all, hazardAt);
+  // authorities verified requests that other people nearby also reported, and cancelled isolated ones
+  const at = (hoursAgo: number) => new Date(Date.now() - hoursAgo * 3600_000).toISOString();
+  const mk = (id: string, status: string, lat: number, lng: number, hoursAgo: number) =>
+    ({ id, ownerId: `u-${id}`, lat, lng, status, flags: [], createdAt: at(hoursAgo) }) as unknown as HelpRequest;
+  const all = [
+    ...Array.from({ length: 20 }, (_, i) => mk(`v${i}`, "verified", 26.8, 90 + i * 0.0002, i * 0.5)),       // one cluster, within hours
+    ...Array.from({ length: 20 }, (_, i) => mk(`c${i}`, "cancelled", 26.2 + i * 0.1, 90.5, 100 + i * 72)), // scattered in space and time
+  ];
+  assert.equal(fitConfidence(all.slice(0, 25)), null, "fewer than 5 of one kind: no model");
+  const model = fitConfidence(all);
   assert.ok(model && model.n === 40);
-  const hi = confidenceOf(mk(500, "new", 26.8), all, hazardAt, model), lo = confidenceOf(mk(501, "new", 26.2), all, hazardAt, model);
+  const hi = confidenceOf(mk("new1", "new", 26.8, 90.001, 0), all, model), lo = confidenceOf(mk("new2", "new", 25.0, 89.0, 0), all, model);
   assert.equal(hi.method, "learned");
-  assert.ok(hi.score > lo.score + 0.2, `the learned model trusts hazard agreement (${hi.score} vs ${lo.score})`);
+  assert.ok(hi.score > lo.score + 0.2, `the learned model trusts corroboration (${hi.score} vs ${lo.score})`);
 });

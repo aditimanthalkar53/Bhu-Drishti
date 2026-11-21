@@ -145,7 +145,7 @@ export const SERVES: Record<RequestType, OfferType[]> = {
 
 export interface Confidence {
   score: number;
-  factors: { corroboration: number; hazard: number | null; reporter: number };
+  factors: { corroboration: number; reporter: number };
   /** "learned": logistic regression on authorities' decisions; "unweighted": too few decisions yet, plain average */
   method: "learned" | "unweighted";
 }
@@ -154,7 +154,7 @@ const NEAR_M = 500, NEAR_MS = 24 * 3600_000;   // what counts as "nearby" for co
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
 /** The evidence about one request, each on 0..1. */
-export function confidenceFactors(r: HelpRequest, all: HelpRequest[], hazardAt: (lat: number, lng: number) => number | null): Confidence["factors"] {
+export function confidenceFactors(r: HelpRequest, all: HelpRequest[]): Confidence["factors"] {
   let near = 0;
   const t = Date.parse(r.createdAt);
   if (r.lat != null && r.lng != null) {
@@ -165,29 +165,27 @@ export function confidenceFactors(r: HelpRequest, all: HelpRequest[], hazardAt: 
       if (haversineM(r.lat, r.lng, o.lat, o.lng) <= NEAR_M) { seen.add(o.ownerId); near++; }
     }
   }
-  const hazard = r.lat != null && r.lng != null ? hazardAt(r.lat, r.lng) : null;
   const mine = all.filter((o) => o.ownerId === r.ownerId && o.id !== r.id);
   const good = mine.filter((o) => o.status === "resolved" || o.status === "verified").length;
   const bad = mine.filter((o) => o.status === "cancelled" || o.flags.includes("possible_accidental")).length;
   return {
     corroboration: near / (near + 1),                       // 0 people → 0, 1 → 0.5, 3 → 0.75: no cap to choose
-    hazard: hazard == null ? null : Math.max(0, Math.min(1, hazard)),
     reporter: (good + 1) / (good + bad + 2),               // Laplace's rule of succession over this reporter's record
   };
 }
 
 export interface ConfidenceModel { w: number[]; b: number; n: number }
-const featureVec = (f: Confidence["factors"]) => [f.corroboration, f.hazard ?? 0, f.hazard == null ? 0 : 1, f.reporter];
+const featureVec = (f: Confidence["factors"]) => [f.corroboration, f.reporter];
 
 /**
  * Learn how much each piece of evidence predicts that a request is genuine, from what authorities decided:
  * verified, assigned, in progress or resolved = genuine; cancelled = not. Logistic regression with a small ridge
  * penalty. Needs at least 30 decisions with at least 5 of each kind; until then there is no model.
  */
-export function fitConfidence(all: HelpRequest[], hazardAt: (lat: number, lng: number) => number | null): ConfidenceModel | null {
+export function fitConfidence(all: HelpRequest[]): ConfidenceModel | null {
   const pos = new Set(["verified", "assigned", "in_progress", "resolved"]);
   const rows = all.filter((r) => pos.has(r.status) || r.status === "cancelled")
-    .map((r) => ({ x: featureVec(confidenceFactors(r, all, hazardAt)), y: pos.has(r.status) ? 1 : 0 }));
+    .map((r) => ({ x: featureVec(confidenceFactors(r, all)), y: pos.has(r.status) ? 1 : 0 }));
   const ones = rows.filter((r) => r.y === 1).length;
   if (rows.length < 30 || ones < 5 || rows.length - ones < 5) return null;
   const p = rows[0].x.length;
@@ -209,17 +207,15 @@ export function fitConfidence(all: HelpRequest[], hazardAt: (lat: number, lng: n
 }
 
 /** How much independent support a request has, 0..1. Used only to sort; low confidence never hides a request. */
-export function confidenceOf(r: HelpRequest, all: HelpRequest[], hazardAt: (lat: number, lng: number) => number | null,
-  model: ConfidenceModel | null = null): Confidence {
-  const f = confidenceFactors(r, all, hazardAt);
+export function confidenceOf(r: HelpRequest, all: HelpRequest[], model: ConfidenceModel | null = null): Confidence {
+  const f = confidenceFactors(r, all);
   let score: number;
   if (model) {
     const z = model.b + featureVec(f).reduce((s, v, k) => s + v * model.w[k], 0);
     score = 1 / (1 + Math.exp(-z));
   } else {
-    const parts = [f.corroboration, f.reporter, ...(f.hazard == null ? [] : [f.hazard])];
-    score = parts.reduce((s, v) => s + v, 0) / parts.length;
+    score = (f.corroboration + f.reporter) / 2;
   }
-  return { score: r2(score), factors: { corroboration: r2(f.corroboration), hazard: f.hazard == null ? null : r2(f.hazard), reporter: r2(f.reporter) },
+  return { score: r2(score), factors: { corroboration: r2(f.corroboration), reporter: r2(f.reporter) },
     method: model ? "learned" : "unweighted" };
 }

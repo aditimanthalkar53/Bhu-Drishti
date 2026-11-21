@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError, post } from "../../api";
 import { Page, useData } from "../common";
-import { getFix, lastFix, LANGUAGES, newClientId, REQUEST_LABEL, rememberFix, SEVERITY_LABEL, SPEECH_LANG, useFix, FixLine,
+import { getFix, languageName, lastFix, newClientId, REQUEST_LABEL, rememberFix, SEVERITY_LABEL, useFix, FixLine,
   type Fix, type HelpRequest, type RequestType } from "./shared";
 
 const CANCEL_S = 60;
@@ -121,13 +121,17 @@ function Sos() {
   );
 }
 
-// ---------------------------------------------------------------------------- describe in your own words (any of 4 languages, typing or voice)
-interface Draft { type: RequestType; severity: 1 | 2 | 3 | 4; people_affected: number | null; needs: string[]; location_hint: string; summary_en: string; summary_local: string; confidence: number }
-type Intake = { ok: true; provider: string; draft: Draft } | { ok: false; provider: string; reason: string };
+// ---------------------------------------------------------------------------- describe in your own words (any language, typing or voice)
+// Nobody picks a language: the server detects it (the model, or the script when there is no model; Whisper for voice).
+// A local model needs ~10 s per message on a CPU, so the message is read in the background as soon as it is written
+// (typing pauses, or a voice message arrives); "Check before sending" then usually has the answer already.
+interface Draft { language: string; type: RequestType; severity: 1 | 2 | 3 | 4; people_affected: number | null; needs: string[]; location_hint: string; summary_en: string; summary_local: string; confidence: number }
+type Intake = { ok: true; provider: string; language: string; draft: Draft } | { ok: false; provider: string; language: string; reason: string };
 
 function Describe() {
-  const profile = useData<{ language: string }>("/api/profile");
-  const [lang, setLang] = useState("en");
+  const [spokenLang, setSpokenLang] = useState<string | null>(null);   // language Whisper heard, if any text was dictated
+  const [voiceProblem, setVoiceProblem] = useState<string | null>(null);
+  const [detected, setDetected] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [provider, setProvider] = useState<string | null>(null);
@@ -141,14 +145,39 @@ function Describe() {
   const [edited, setEdited] = useState(false);
   const loc = useFix();
   const clientId = useRef(newClientId());
+  const reading = useRef<{ text: string; result: Promise<Intake>; done: boolean } | null>(null);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const [readingState, setReadingState] = useState<"idle" | "reading" | "ready">("idle");
 
-  useEffect(() => { if (profile.data?.language) setLang(profile.data.language); }, [profile.data]);
   useEffect(() => { void loc.locate(); }, [loc.locate]);
+
+  /** The model's reading of `t`: reuses one already started for the same text, otherwise starts it after any in flight. */
+  const read = (t: string, lang: string | null): Promise<Intake> => {
+    if (reading.current?.text === t) return reading.current.result;
+    // the language heard in a voice message is passed only as a hint; the model still decides from the text
+    const result = queue.current.catch(() => undefined).then(() => post<Intake>("/api/intake", lang ? { text: t, language: lang } : { text: t }));
+    const entry = { text: t, result, done: false };
+    reading.current = entry;
+    queue.current = result;
+    setReadingState("reading");
+    result.finally(() => { entry.done = true; if (reading.current === entry) setReadingState("ready"); }).catch(() => undefined);
+    return result;
+  };
+
+  // read in the background once the person pauses (voice text arrives all at once, so it starts almost at once)
+  useEffect(() => {
+    const t = text.trim();
+    if (t.length < 12 || reading.current?.text === t) return;
+    setReadingState("idle");
+    const id = window.setTimeout(() => void read(t, spokenLang).catch(() => undefined), spokenLang ? 300 : 1500);
+    return () => window.clearTimeout(id);
+  }, [text, spokenLang]);
 
   const makeDraft = async () => {
     setBusy("draft"); setErr(null);
     try {
-      const r = await post<Intake>("/api/intake", { text, language: lang });
+      const r = await read(text.trim(), spokenLang);
+      setDetected(r.language);
       if (r.ok) {
         setDraft(r.draft); setProvider(r.provider); setManual(null);
         setType(r.draft.type); setSeverity(r.draft.severity); setPeople(r.draft.people_affected?.toString() ?? "");
@@ -168,7 +197,7 @@ function Describe() {
       const f = loc.fix;
       const r = await post<HelpRequest>("/api/requests", {
         clientId: clientId.current, source: "local_language", type, severity, peopleAffected: people ? Number(people) : null,
-        description: draft?.summary_local || text, originalText: text, originalLanguage: lang, summaryEn: draft?.summary_en ?? null, needs: draft?.needs ?? [],
+        description: draft?.summary_local || text, originalText: text, ...(detected && detected !== "und" ? { originalLanguage: detected } : {}), summaryEn: draft?.summary_en ?? null, needs: draft?.needs ?? [],
         area: draft?.location_hint || null, ...(f ? { lat: f.lat, lng: f.lng, accuracyM: f.accuracyM, locationAt: f.at } : {}),
         intake: draft ? { provider: provider ?? "model", confidence: draft.confidence, edited } : null,
       });
@@ -185,27 +214,25 @@ function Describe() {
     <section className="card">
       <h2>Your request was sent.</h2>
       <p className="small">We kept your own words, so nothing is lost in translation. <Link to="/app/my-requests">Follow it in My requests</Link>.</p>
-      <button className="btn" onClick={() => { setDone(null); setText(""); setDraft(null); setManual(null); }}>Ask for something else</button>
+      <button className="btn" onClick={() => { setDone(null); setText(""); setDraft(null); setManual(null); setDetected(null); setSpokenLang(null); reading.current = null; setReadingState("idle"); }}>Ask for something else</button>
     </section>
   );
 
   return (
     <section className="card">
-      <div className="ev-head">
-        <h2>Describe it in your own words</h2>
-        <select className="input" aria-label="Language" value={lang} onChange={(e) => setLang(e.target.value)}>
-          {Object.entries(LANGUAGES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-        </select>
-      </div>
+      <h2>Describe it in your own words</h2>
       <label className="field">
-        <span>What is happening? Who needs help, how many people, and where?</span>
-        <textarea value={text} maxLength={4000} onChange={(e) => { setText(e.target.value); setDraft(null); }} rows={4} lang={SPEECH_LANG[lang]} />
+        <span>What is happening? Who needs help, how many people, and where? Write in any language.</span>
+        <textarea value={text} maxLength={4000} onChange={(e) => { setText(e.target.value); setDraft(null); setDetected(null); if (!e.target.value) setSpokenLang(null); }} rows={4} />
       </label>
       <div className="row-actions">
-        <Voice lang={lang} onText={(t) => setText((x) => (x ? `${x} ${t}` : t))} />
-        <button className="btn btn-primary" disabled={text.trim().length < 3 || !!busy} onClick={() => void makeDraft()}>{busy === "draft" ? "Reading… (up to a minute)" : "Check before sending"}</button>
+        <Voice onProblem={setVoiceProblem} onText={(t, l) => { setSpokenLang(l); setDetected(null); setDraft(null); setText((x) => (x ? `${x} ${t}` : t)); }} />
+        <button className="btn btn-primary" disabled={text.trim().length < 3 || !!busy} onClick={() => void makeDraft()}>{busy === "draft" ? "Reading… (a few seconds)" : "Check before sending"}</button>
         <button className="btn" disabled={text.trim().length < 3 || busy === "send"} onClick={() => { setDraft(null); setManual("you chose to send it as written"); }}>Send as it is</button>
       </div>
+      {readingState === "reading" && !busy && !draft && <p className="muted small" aria-live="polite">Reading your message in the background, so checking will be quick…</p>}
+      {readingState === "ready" && !busy && !draft && reading.current?.text === text.trim() && <p className="muted small" aria-live="polite">Your message has been read. Press Check before sending to see it.</p>}
+      {voiceProblem && <p className="notice notice-warn" role="alert">{voiceProblem}</p>}
       <FixLine fix={loc.fix} state={loc.state} onLocate={() => void loc.locate()} />
 
       {(draft || manual) && (
@@ -213,11 +240,14 @@ function Describe() {
           {draft ? (
             <>
               <p className="notice notice-ok">Is this right? Change anything that is wrong, then send.</p>
-              <p><strong>{draft.summary_local}</strong></p>
-              {lang !== "en" && <p className="muted small">English for the team: {draft.summary_en}</p>}
+              {draft.language === "en" && <p><strong>{draft.summary_en}</strong></p>}
+              {languageName(draft.language) && <p className="muted small">Language detected: {languageName(draft.language)}</p>}
+              {draft.language !== "en" && <p className="muted small">English for the team: {draft.summary_en}</p>}
             </>
           ) : (
-            <p className="notice notice-warn">Automatic reading is not available ({manual}). Your words are sent exactly as written; please choose the type.</p>
+            <p className="notice notice-warn">{manual === "you chose to send it as written"
+              ? "Your words are sent exactly as written; the team's system will also read them after sending. Please choose the type."
+              : `Automatic reading is not available (${manual}). Your words are sent exactly as written; please choose the type.`}</p>
           )}
           <div className="form-grid">
             <label className="field"><span>Type of help</span>
@@ -240,26 +270,86 @@ function Describe() {
   );
 }
 
-/** Browser speech recognition where it exists (Chrome, Edge, Android); typing always works. */
-function Voice({ lang, onText }: { lang: string; onText(t: string): void }) {
-  const Rec = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
-  const [on, setOn] = useState(false);
-  const rec = useRef<any>(null);
-  if (!Rec) return null;
-  const toggle = () => {
-    if (on) { rec.current?.stop(); return; }
-    const r = new Rec();
-    r.lang = SPEECH_LANG[lang] ?? "en-IN";
-    r.interimResults = false;
-    r.continuous = true;
-    r.onresult = (e: any) => onText(Array.from(e.results).slice(e.resultIndex).map((x: any) => x[0].transcript).join(" "));
-    r.onend = () => setOn(false);
-    r.onerror = () => setOn(false);
-    rec.current = r;
-    r.start();
-    setOn(true);
+/** What our speech endpoint returns: the words, and the language Whisper heard them in. */
+interface Transcript { text: string; language: string; language_probability: number; duration_s: number; seconds: number }
+
+const MAX_RECORDING_S = 120;
+const blobToBase64 = (b: Blob) => new Promise<string>((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve(String(r.result));
+  r.onerror = () => reject(r.error ?? new Error("could not read the recording"));
+  r.readAsDataURL(b);
+});
+
+/**
+ * Voice input: the browser only records; our own server turns the recording into text with Whisper and detects the
+ * language itself, so nobody chooses a language. (Browsers' built-in recognition fails in Edge, does not exist in Brave
+ * or Firefox, and has to be told the language in advance.) Typing always works.
+ */
+function Voice({ onText, onProblem }: { onText(text: string, language: string): void; onProblem(msg: string | null): void }) {
+  const [state, setState] = useState<"idle" | "recording" | "transcribing">("idle");
+  const [secs, setSecs] = useState(0);
+  const rec = useRef<MediaRecorder | null>(null);
+  const timer = useRef<number | undefined>(undefined);
+  const supported = typeof window !== "undefined" && "MediaRecorder" in window && !!navigator.mediaDevices?.getUserMedia;
+
+  useEffect(() => () => { window.clearInterval(timer.current); rec.current?.stream.getTracks().forEach((t) => t.stop()); }, []);
+  if (!supported) return null;
+
+  const transcribe = async (blob: Blob) => {
+    setState("transcribing");
+    try {
+      const r = await post<Transcript>("/api/speech", { audio: await blobToBase64(blob) });
+      if (r.text.trim()) onText(r.text.trim(), r.language);
+      else onProblem("No words were recognised in the recording. Try again a little closer to the microphone, or type instead.");
+    } catch (e) {
+      onProblem(`Your voice could not be turned into text (${(e as Error).message}). Please type instead.`);
+    } finally {
+      setState("idle");
+    }
   };
-  return <button type="button" className={`btn ${on ? "btn-danger" : ""}`} onClick={toggle} aria-pressed={on}>{on ? "Stop speaking" : "Speak instead"}</button>;
+
+  const start = async () => {
+    onProblem(null);
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      const name = (e as DOMException).name;
+      onProblem(name === "NotAllowedError" || name === "SecurityError"
+        ? "The microphone is blocked for this site. Click the lock or microphone icon in the address bar, allow the microphone, then press Speak again."
+        : name === "NotFoundError" ? "No microphone was found. Plug one in or check Windows sound settings, or type instead."
+        : `The microphone could not be opened (${name}). Please type instead.`);
+      return;
+    }
+    const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t));
+    const r = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 32000 } : undefined);
+    const parts: Blob[] = [];
+    r.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
+    r.onstop = () => {
+      window.clearInterval(timer.current);
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(parts, { type: r.mimeType || type || "audio/webm" });
+      if (blob.size < 1000) { setState("idle"); onProblem("The recording was empty. Press Speak, talk, then press Stop."); return; }
+      void transcribe(blob);
+    };
+    rec.current = r;
+    r.start(1000);
+    setSecs(0);
+    setState("recording");
+    const began = Date.now();
+    timer.current = window.setInterval(() => {
+      const s = Math.floor((Date.now() - began) / 1000);
+      setSecs(s);
+      if (s >= MAX_RECORDING_S && r.state === "recording") r.stop();
+    }, 250);
+  };
+
+  const label = state === "recording" ? `Stop (${secs}s)` : state === "transcribing" ? "Turning voice into text…" : "Speak instead";
+  return (
+    <button type="button" className={`btn ${state === "recording" ? "btn-danger" : ""}`} disabled={state === "transcribing"} aria-pressed={state === "recording"}
+      onClick={() => (state === "recording" ? rec.current?.stop() : void start())}>{label}</button>
+  );
 }
 
 /** Plain list of the person's own requests. */

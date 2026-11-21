@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, authUrl, patch, post } from "../../api";
 import { Empty, ErrorNote, Page, Pill, useAction, useData } from "../common";
-import { boundsOf, LANGUAGES, MapFrame, OFFER_LABEL, REQUEST_LABEL, RequestDots, Severity, Status, type HelpRequest, type Offer } from "./shared";
+import { boundsOf, languageName, MapFrame, OFFER_LABEL, REQUEST_LABEL, RequestDots, Severity, Status, type HelpRequest, type Offer } from "./shared";
 
 const STATUSES = ["new", "verified", "assigned", "in_progress", "resolved", "cancelled"];
 const SOURCES: Record<string, string> = { sos: "SOS", form: "Form", local_language: "Own words", drain_watch: "Drain Watch" };
@@ -19,7 +19,7 @@ export function RequestsPage() {
   const pick = (id: string | null) => { const p = new URLSearchParams(params); if (id) p.set("open", id); else p.delete("open"); setParams(p, { replace: true }); };
 
   return (
-    <Page title="Requests" lead="Every request, SOS and Drain Watch report. Sorted by severity × confidence; confidence comes from nearby reports, the hazard layer and the reporter's history."
+    <Page title="Requests" lead="Every request, SOS and Drain Watch report. Sorted by severity × confidence; confidence comes from nearby reports and the reporter's history."
       actions={<button className="btn btn-small" onClick={() => void reqs.reload()}>Refresh</button>}>
       <div className="row-actions">
         <div className="seg" role="group" aria-label="Status">
@@ -67,7 +67,7 @@ function Detail({ r, onChange, onClose }: { r: HelpRequest; onChange(): void; on
   const act = useAction();
   const suggest = useData<{ offer: Offer; km: number | null; typeFits: boolean; covers: number | null }[]>(`/api/matches/suggest?requestId=${r.id}`, [r.id]);
   const set = (body: Record<string, unknown>) => act.run("triage", async () => { await patch(`/api/requests/${r.id}`, body); onChange(); });
-  const lang = r.originalLanguage ? LANGUAGES[r.originalLanguage] ?? r.originalLanguage : null;
+  const lang = languageName(r.originalLanguage);
   const photos = useMemo(() => [...(r.drain?.photos ?? []), ...(r.drain?.confirmations ?? []).flatMap((c) => c.photos)], [r.drain]);
   return (
     <section className="card">
@@ -88,7 +88,7 @@ function Detail({ r, onChange, onClose }: { r: HelpRequest; onChange(): void; on
         {r.area ? ` · ${r.area}` : ""}{r.peopleAffected != null ? ` · ${r.peopleAffected} people` : ""}{r.contact ? ` · ${r.contact}` : ""}
       </p>
       {r.confidence && <p className="muted small">Confidence {Math.round(r.confidence.score * 100)}% ({r.confidence.method === "learned" ? "weights learned from authorities' past decisions" : "plain average; weights are learned after 30 decisions"}): nearby reports {Math.round(r.confidence.factors.corroboration * 100)}%,
-        hazard {r.confidence.factors.hazard == null ? "not loaded" : `${Math.round(r.confidence.factors.hazard * 100)}%`}, reporter history {Math.round(r.confidence.factors.reporter * 100)}%</p>}
+        reporter history {Math.round(r.confidence.factors.reporter * 100)}%</p>}
       {r.drain && (
         <div className="stack">
           <p className="small">Drain Watch: {r.drain.category.replace(/_/g, " ")} (chosen by {r.drain.categorySource === "ai" ? "AI suggestion" : "citizen"}) · {r.drain.confirmations.length} confirmation(s) ·
@@ -148,7 +148,7 @@ export function VolunteersPage() {
                 <tr key={p.id}>
                   <td><strong>{p.name}</strong><div className="muted small">{p.email}</div></td>
                   <td>{p.ward ?? "–"}</td><td>{p.phone ?? "–"}</td>
-                  <td className="small">{[...p.skills, ...p.resources].join(", ") || "–"}</td><td>{LANGUAGES[p.language] ?? p.language}</td>
+                  <td className="small">{[...p.skills, ...p.resources].join(", ") || "–"}</td><td>{languageName(p.language) ?? "–"}</td>
                   <td>{p.allowListed ? <Pill tone="info">authority (allow-list)</Pill> : (
                     <select className="input" aria-label={`Role of ${p.name}`} value={p.role} onChange={(e) => void act.run(p.id, async () => {
                       await post(`/api/admin/users/${p.id}/role`, { role: e.target.value }); await people.reload(); return `${p.name} is now ${e.target.value}.`;

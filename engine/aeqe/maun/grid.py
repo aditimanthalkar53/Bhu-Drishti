@@ -1,4 +1,4 @@
-"""A regular lon/lat grid over a bounding box. Cell ids are stable for a given grid origin and size."""
+"""The grid Maun works on: fixed-size cells with stable ids (the backend builds the same ids in maun.ts)."""
 
 from __future__ import annotations
 

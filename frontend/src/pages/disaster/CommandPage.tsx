@@ -1,15 +1,14 @@
 import { Link } from "react-router-dom";
 import { cssVar } from "../../theme";
 import { ErrorNote, Pill, useData } from "../common";
-import { boundsOf, HazardCells, heat, Legend, MapFrame, OfferDots, REQUEST_LABEL, RequestDots, Severity, SilentCells, TaskDots,
-  type HazardGrid, type HelpRequest, type Offer, type SilentZone, type Task } from "./shared";
+import { boundsOf, Legend, MapFrame, OfferDots, REQUEST_LABEL, RequestDots, Severity, SilentCells, TaskDots,
+  type HelpRequest, type Offer, type SilentZone, type Task } from "./shared";
 
-/** Authority command view: one map with requests, offers, tasks, the hazard layer and Maun's silent zones. */
+/** Authority command view: one map with requests, offers, tasks and Maun's silent zones. */
 export function CommandPage() {
   const reqs = useData<HelpRequest[]>("/api/requests?sort=priority");
   const offers = useData<Offer[]>("/api/offers");
   const tasks = useData<Task[]>("/api/tasks");
-  const hazard = useData<HazardGrid>("/api/hazard/latest");
   const silent = useData<{ run: { name: string; simulated: boolean } | null; zones: SilentZone[] }>("/api/maun/silent-zones");
   const updates = useData<{ status: string }[]>("/api/updates");
   const all = reqs.data ?? [];
@@ -26,7 +25,7 @@ export function CommandPage() {
         <div>
           <p className="eyebrow">Command view</p>
           <h1>Citizens ask. Volunteers act. You coordinate.</h1>
-          <p>Requests, SOS, offers and tasks on one map, with the hazard layer and the silent zones where need is likely but nobody is asking.</p>
+          <p>Requests, SOS, offers and tasks on one map, with the silent zones where need is likely but nobody is asking.</p>
         </div>
         <div className="page-actions"><button className="btn" onClick={reload}>Refresh</button></div>
       </section>
@@ -40,16 +39,14 @@ export function CommandPage() {
         <Kpi to="/app/updates" label="Bulletins awaiting approval" value={(updates.data ?? []).filter((u) => u.status === "pending_approval").length} />
       </div>
       <section className="card">
-        <MapFrame height={520} bounds={boundsOf([...live, ...avail], [...zones.map((z) => z.bbox), hazard.data?.bbox ?? null])}>
-          {hazard.data && <HazardCells cells={hazard.data.cells} opacity={0.3} />}
+        <MapFrame height={520} bounds={boundsOf([...live, ...avail], zones.map((z) => z.bbox))}>
           <SilentCells zones={zones} />
           <OfferDots offers={avail} />
           <TaskDots tasks={openTasks} />
           <RequestDots requests={live} />
         </MapFrame>
         <Legend items={[["Life in danger", cssVar("--error")], ["Urgent", cssVar("--ochre")], ["Request", cssVar("--water")], ["Offer", cssVar("--ok")],
-          ["Task", cssVar("--cyan"), true], ["Silent zone", cssVar("--violet"), true], ["Hazard", heat(0.8)]]} />
-        {!hazard.data?.cells.length && <p className="muted small">No hazard layer loaded yet: open the <Link to="/app/hazard">Hazard map</Link> and load your area.</p>}
+          ["Task", cssVar("--cyan"), true], ["Silent zone", cssVar("--violet"), true]]} />
         {silent.data?.run?.simulated && <p className="notice notice-warn">Silent zones come from a SIMULATED demo run.</p>}
       </section>
       <div className="dash-grid">

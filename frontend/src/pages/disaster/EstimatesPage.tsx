@@ -5,12 +5,12 @@ import { Link, useSearchParams } from "react-router-dom";
 import { authUrl, post } from "../../api";
 import { ConvergenceChart } from "../../components/ConvergenceChart";
 import { cssVar } from "../../theme";
-import { Empty, ErrorNote, Page, Pill, useAction, useData } from "../common";
+import { Empty, ErrorNote, Page, useAction, useData } from "../common";
 import type { Region } from "../../types";
 import { heat, MapFrame, SILENT_BASIS, SilentCells, type SilentZone } from "./shared";
 
 interface Overall { estimate: number; lo: number; hi: number; reported: number; hidden: number; hidden_lo: number; hidden_hi: number; method: string; n: number; bounded_by_unreachable: boolean; area?: string; cells?: number }
-interface RunCell { id: string; stratum: number; design_score: number; status: string; measured: number | null; estimated_need: number | null; hidden_need: number | null; reported: number; hazard: number; households: number }
+interface RunCell { id: string; stratum: number; design_score: number; status: string; measured: number | null; estimated_need: number | null; hidden_need: number | null; reported: number; households: number }
 interface Rate { rate: number; lo: number; hi: number; checks: number }
 interface Last {
   status: "collecting" | "estimating"; message: string | null; overall: Overall | null; by_area: Overall[]; checks_done: number; min_checks: number;
@@ -19,7 +19,7 @@ interface Last {
   silent_zones: SilentZone[]; observation_suggestion: { stratum: number; reason: string; cells: string[] }; cells: RunCell[]; covers: string; confidence_used: number;
 }
 interface RunSummary { id: string; name: string; createdAt: string; simulated: boolean; cellCount: number; waveSize: number; bbox: [number, number, number, number]; notes: string[];
-  hazardSources: { id: string; state: string }[]; observationIds: string[]; history?: { n: number; t: number; value: number; lo: number; hi: number }[];
+  history?: { n: number; t: number; value: number; lo: number; hi: number }[];
   last: { status: string; overall: Overall | null; checks_done: number; pending: number; unreachable: number; silent: number } | null }
 interface RunDetail extends Omit<RunSummary, "last"> { cells: { id: string; bbox: [number, number, number, number]; area: string }[]; last: Last | null }
 
@@ -65,7 +65,7 @@ function NewRun({ onCreated }: { onCreated(id: string): void }) {
     <section className="card">
       <h2>New estimation run</h2>
       <p className="muted small">Choose a district (cells are kept inside its boundary) or use the map view. For every cell the run reads people from the HRSL 30 m
-        population map and the hazard layers; each wave sends volunteers to randomly chosen cells.</p>
+        population map and the requests already reported; each wave sends volunteers to randomly chosen cells.</p>
       <div className="seg" role="group" aria-label="Area by">
         <button className={mode === "district" ? "active" : ""} onClick={() => setMode("district")}>District</button>
         <button className={mode === "map" ? "active" : ""} onClick={() => setMode("map")}>Map view</button>
@@ -92,7 +92,7 @@ function NewRun({ onCreated }: { onCreated(id: string): void }) {
           const area = mode === "district" ? { regionId: chosen!.id } : { bbox: f.bbox };
           const r = await post<{ id: string }>("/api/maun/runs", { name: f.name, ...area, cellDeg: Number(f.cellDeg), waveSize: Number(f.waveSize) });
           setOpen(false); onCreated(r.id);
-        })}>{act.busy ? "Reading population and hazard, choosing cells… (a few minutes for a district)" : "Start run and create field-check tasks"}</button>
+        })}>{act.busy ? "Reading population and reports, choosing cells… (a few minutes for a district)" : "Start run and create field-check tasks"}</button>
         <button className="btn" onClick={() => setOpen(false)}>Cancel</button>
       </div>
     </section>
@@ -102,7 +102,7 @@ function NewRun({ onCreated }: { onCreated(id: string): void }) {
 function RunView({ id }: { id: string }) {
   const run = useData<RunDetail & { history?: RunSummary["history"] }>(`/api/maun/runs/${id}`, [id]);
   const act = useAction();
-  const [show, setShow] = useState<"hidden" | "status" | "hazard">("hidden");
+  const [show, setShow] = useState<"hidden" | "status">("hidden");
   // live: the estimate and its range update as volunteers enter results
   useEffect(() => {
     const es = new EventSource(authUrl(`/api/maun/runs/${id}/events`));
@@ -138,17 +138,17 @@ function RunView({ id }: { id: string }) {
       <div className="dash-grid">
         <section className="card">
           <div className="ev-head"><h2>Map</h2>
-            <div className="seg" role="group" aria-label="Show">{([["hidden", "Hidden need"], ["status", "Checks"], ["hazard", "Hazard"]] as const).map(([k, v]) => <button key={k} className={show === k ? "active" : ""} onClick={() => setShow(k)}>{v}</button>)}</div>
+            <div className="seg" role="group" aria-label="Show">{([["hidden", "Hidden need"], ["status", "Checks"]] as const).map(([k, v]) => <button key={k} className={show === k ? "active" : ""} onClick={() => setShow(k)}>{v}</button>)}</div>
           </div>
           <MapFrame height={420} bounds={bounds}>
             {r.cells.map((c) => {
               const s = byId.get(c.id);
               if (!s) return null;
-              const fill = show === "hidden" ? heat((s.hidden_need ?? 0) / maxHidden) : show === "hazard" ? heat(s.hazard) : statusColor(s.status);
-              const op = show === "status" ? (s.status === "not_selected" ? 0.05 : 0.55) : 0.1 + 0.5 * (show === "hidden" ? (s.hidden_need ?? 0) / maxHidden : s.hazard);
+              const fill = show === "hidden" ? heat((s.hidden_need ?? 0) / maxHidden) : statusColor(s.status);
+              const op = show === "status" ? (s.status === "not_selected" ? 0.05 : 0.55) : 0.1 + 0.5 * ((s.hidden_need ?? 0) / maxHidden);
               return (
                 <Rectangle key={c.id} bounds={[[c.bbox[1], c.bbox[0]], [c.bbox[3], c.bbox[2]]]} pathOptions={{ weight: s.status === "pending" || s.status === "unreachable" ? 1.5 : 0.3, color: statusColor(s.status), fillColor: fill, fillOpacity: op }}>
-                  <Tooltip>{c.id} ({c.area}) · stratum {s.stratum} · {s.status.replace(/_/g, " ")}<br />{Math.round(s.households)} households · reported {s.reported} · {s.measured != null ? `measured ${s.measured}` : s.estimated_need != null ? `estimated ${s.estimated_need.toFixed(1)}` : "not estimated yet"}{s.hidden_need != null ? ` · hidden ${s.hidden_need.toFixed(1)}` : ""} · hazard {s.hazard.toFixed(2)}</Tooltip>
+                  <Tooltip>{c.id} ({c.area}) · stratum {s.stratum} · {s.status.replace(/_/g, " ")}<br />{Math.round(s.households)} households · reported {s.reported} · {s.measured != null ? `measured ${s.measured}` : s.estimated_need != null ? `estimated ${s.estimated_need.toFixed(1)}` : "not estimated yet"}{s.hidden_need != null ? ` · hidden ${s.hidden_need.toFixed(1)}` : ""}</Tooltip>
                 </Rectangle>
               );
             })}
@@ -166,7 +166,7 @@ function RunView({ id }: { id: string }) {
           </div>
           <ErrorNote error={act.error} />
           {act.message && <p className="notice notice-ok">{act.message}</p>}
-          {L?.observation_suggestion?.cells.length ? <p className="small">Widest range: stratum {L.observation_suggestion.stratum} ({L.observation_suggestion.reason}). {r.observationIds.length} sharper-observation request(s) sent <Pill tone="warn">SIMULATED adapter</Pill>.</p> : null}
+          {L?.observation_suggestion?.cells.length ? <p className="small">Widest range: stratum {L.observation_suggestion.stratum} ({L.observation_suggestion.reason}): checks there narrow the estimate most.</p> : null}
         </section>
       </div>
 
@@ -182,7 +182,7 @@ function RunView({ id }: { id: string }) {
       {!!L?.strata.length && (
         <section className="card">
           <h2>Strata</h2>
-          <p className="muted small">Cells are grouped by the average percentile rank of households exposed to the hazard and of reports (no weights). Reporting rate = reports ÷ measured need in the checked cells, with its 95% interval.</p>
+          <p className="muted small">Cells are grouped by the average percentile rank of households and of reports (no weights). Reporting rate = reports ÷ measured need in the checked cells, with its 95% interval.</p>
           <table className="tbl small">
             <thead><tr><th>Stratum</th><th className="num">Cells</th><th className="num">Checked</th><th className="num">Pending</th><th className="num">Unreachable</th><th className="num">Mean reported</th><th className="num">Mean measured</th><th className="num">Reporting rate</th><th className="num">Share of uncertainty</th></tr></thead>
             <tbody>{L.strata.map((s) => <tr key={s.stratum}><td>{s.stratum}</td><td className="num">{s.cells}</td><td className="num">{s.checked}</td><td className="num">{s.pending}</td><td className="num">{s.unreachable}</td><td className="num">{s.mean_reported}</td><td className="num">{s.mean_measured ?? "–"}</td><td className="num">{fmtRate(s.reporting_rate)}</td><td className="num">{s.variance_share != null ? `${Math.round(s.variance_share * 100)}%` : "–"}</td></tr>)}</tbody>
@@ -190,7 +190,7 @@ function RunView({ id }: { id: string }) {
         </section>
       )}
       {!!r.notes.length && <section className="card"><h2>Assumptions</h2><ul className="small">{r.notes.map((n) => <li key={n}>{n}</li>)}</ul>
-        <p className="muted small">Nothing about need is assumed: how need relates to each hazard layer, people and reports is learned from the field checks by the cross-fitted model. The design only decides which cells are checked; it cannot bias the estimate.</p></section>}
+        <p className="muted small">Nothing about need is assumed: how need relates to people and reports is learned from the field checks by the cross-fitted model. The design only decides which cells are checked; it cannot bias the estimate.</p></section>}
     </div>
   );
 }

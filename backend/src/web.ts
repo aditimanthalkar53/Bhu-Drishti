@@ -22,7 +22,8 @@ export async function webRoutes(app: FastifyInstance, root: string, frameAncesto
   app.addHook("onSend", async (_req, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
-    reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+    // the site itself needs these (voice input, photo capture, location for help requests); embedded frames get none
+    reply.header("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self), payment=()");
     reply.header("Content-Security-Policy", csp);
     if (!frameAncestors.length) reply.header("X-Frame-Options", "SAMEORIGIN");
     // files may be sent brotli/gzip-encoded: caches must keep one copy per Accept-Encoding

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from aeqe.hazard.grid import make_grid
+from aeqe.maun.grid import make_grid
 from aeqe.maun import compute
 
 BBOX = (90.80, 26.20, 91.30, 26.70)      # roughly the Barpeta district box (Assam)

@@ -199,7 +199,7 @@ function SatelliteLanding() {
           <p className="eyebrow">Disaster coordination · Maun</p>
           <h2 className="lx-h2">Citizens ask. Volunteers act.<br /><span className="lx-grad">Authorities coordinate.</span></h2>
           <p className="lx-sub">Requests, offers of help and official updates in one place, and an honest estimate of the need nobody
-            reported, so volunteers and satellite observation reach the quiet areas first.</p>
+            reported, so volunteers reach the quiet areas first.</p>
         </div>
         {!user && <div data-reveal><RoleChooser /></div>}
         <div className="lx-bento" data-stagger>
@@ -236,14 +236,13 @@ const ROLES = [
   { icon: icon("M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"), title: "Volunteers act", tag: "task board",
     body: "Claim a task, do it, report back. Deliveries, rescues and field checks, each on a map." },
   { icon: icon("M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z"), title: "Authorities coordinate", wide: true, tag: "two-person approval · audit log",
-    body: "One command map with requests, offers, tasks and hazard layers. Official bulletins are drafted by one officer, approved by a second, then published and emailed. Every action is in the audit log." },
+    body: "One command map with requests, offers, tasks and silent zones. Official bulletins are drafted by one officer, approved by a second, then published and emailed. Every action is in the audit log." },
 ];
 
 const MAUN_STEPS = [
   { n: "01", title: "Count who asked", body: "Requests, SOS and Drain Watch reports land on one map, sorted by severity and by how well each is corroborated." },
-  { n: "02", title: "Read the hazard from many satellites", body: "Fires (NASA FIRMS), rainfall (GPM IMERG), flood (MODIS) and river forecasts (GloFAS) on one grid, each with when it last observed." },
-  { n: "03", title: "Check a random sample on the ground", body: "Cells are grouped by predicted need and volunteers visit randomly chosen ones. An unreachable cell is never swapped for an easier one." },
-  { n: "04", title: "Estimate the need nobody reported", body: "From those checks Maun estimates the true need and the hidden need, with a 95% range that stays valid however often you look. Silent zones are flagged for action." },
+  { n: "02", title: "Check a random sample on the ground", body: "Cells are grouped by predicted need and volunteers visit randomly chosen ones. An unreachable cell is never swapped for an easier one." },
+  { n: "03", title: "Estimate the need nobody reported", body: "From those checks Maun estimates the true need and the hidden need, with a 95% range that stays valid however often you look. Silent zones are flagged for action." },
 ];
 
 function MaunLanding() {
@@ -304,7 +303,7 @@ function MaunLanding() {
           <p className="eyebrow">Maun</p>
           <h2 className="lx-h2">Silence is not safety.</h2>
           <p className="lx-sub">Every platform counts the people who asked for help. Where phones are dead or networks are down, the worst-hit places can be the quietest.
-            Maun estimates the true need, including what nobody reported, and sends volunteers and satellite observation to the quiet areas first.</p>
+            Maun estimates the true need, including what nobody reported, and sends volunteers to the quiet areas first.</p>
         </div>
         <ol className="lx-steps">
           <span className="lx-rail" aria-hidden="true"><span className="lx-rail-fill" /></span>
@@ -315,8 +314,8 @@ function MaunLanding() {
         <div className="lx-head" data-reveal><p className="eyebrow">Honest limits</p><h2 className="lx-h2">Clear about what it knows.</h2></div>
         <div className="lx-honesty" data-stagger>
           <div className="lx-glass"><h3>The range covers sampling error</h3><p>The 95% range covers the error from checking a sample of places. It does not cover counting mistakes in the field or a wrong population map.</p></div>
-          <div className="lx-glass"><h3>Freshness varies by source</h3><p>No satellite watches continuously. Each hazard source shows when it last observed; forecasts are labelled as forecasts.</p></div>
-          <div className="lx-glass"><h3>Simulations are labelled</h3><p>Demo data, simulated field checks and the simulated sharper-observation adapter are marked SIMULATED everywhere they appear.</p></div>
+          <div className="lx-glass"><h3>People per cell are estimated</h3><p>Households per cell come from the HRSL 30 m population map. Where it cannot be read, a flat 400 people/km² is used and the run says so.</p></div>
+          <div className="lx-glass"><h3>Simulations are labelled</h3><p>Demo data and simulated field checks are marked SIMULATED everywhere they appear.</p></div>
           <div className="lx-glass"><h3>Web only, needs a connection</h3><p>Maun runs in the browser and needs connectivity. Bulletins are coordination messages from the response team; official warnings come from NDMA SACHET.</p></div>
         </div>
       </section>
@@ -325,7 +324,7 @@ function MaunLanding() {
         <button className="btn btn-primary btn-pill btn-xl" data-magnetic onClick={go}>{user ? "Open Maun" : "Join Maun"}</button>
       </section>
       <footer className="lx-footer">
-        <p className="muted small">Maun, built on the Bhu-Drishti AEQE engine · Hazard data: NASA FIRMS, NASA GPM IMERG, MODIS NRT Global Flood Product, Open-Meteo / Copernicus GloFAS · Official alerts: NDMA SACHET</p>
+        <p className="muted small">Maun, built on the Bhu-Drishti AEQE engine · Population: HRSL (Meta / CIESIN) · Official alerts: NDMA SACHET</p>
       </footer>
       {showAuth && <RoleChooserModal onClose={() => setShowAuth(false)} />}
     </div>

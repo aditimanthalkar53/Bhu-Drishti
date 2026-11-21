@@ -4,7 +4,6 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { audit } from "./delivery.js";
 import { notifyAuthorities, now, type HelpRequest, type Task } from "./disaster.js";
 import { EngineError, type EngineClient } from "./engine-client.js";
-import { fetchGrid, parseBbox, requestObservation, type HazardGrid } from "./hazard/index.js";
 import { guard } from "./roles.js";
 import type { Store, StoredRecord } from "./store/types.js";
 
@@ -15,9 +14,10 @@ import type { Store, StoredRecord } from "./store/types.js";
  * Each selected cell becomes a "field_check" task for volunteers. See engine/aeqe/maun/run.py for the statistics.
  */
 export interface MaunCell {
-  id: string; bbox: [number, number, number, number]; area_km2: number; hazard: number; population: number | null;
+  id: string; bbox: [number, number, number, number]; area_km2: number; population: number | null;
   reported: number; reported_recent: number; reported_earlier: number; area: string;
-  /** each hazard layer on 0-1, so the model can learn its own weight (design version 2) */
+  /** only in runs created while the app had a hazard layer; kept so those runs replay exactly as they were computed */
+  hazard?: number;
   layers?: Record<string, number>;
 }
 type Result = { households: number } | { unreachable: true };
@@ -34,16 +34,22 @@ export interface MaunRun extends StoredRecord {
   results: Record<string, Result>;
   resultMeta: Record<string, { by: string; at: string; taskId: string | null }>;
   looks: number;
-  hazardSources: HazardGrid["sources"];
   notes: string[];
   simulated: boolean;
-  observationIds: string[];
   createdBy: string;
   last: Record<string, any> | null;
   history?: { n: number; looks: number; t: number; value: number; lo: number; hi: number }[];
   /** 1 = runs created before data-driven strata (replayed with their original design); 2 = current */
   designVersion?: number;
   regionId?: string | null;
+}
+
+export function parseBbox(s: string | undefined): [number, number, number, number] | null {
+  const v = (s ?? "").split(",").map(Number);
+  if (v.length !== 4 || v.some((x) => !Number.isFinite(x))) return null;
+  const [w, so, e, n] = v;
+  if (w >= e || so >= n || e - w > 2 || n - so > 2 || Math.abs(so) > 90 || Math.abs(n) > 90) return null;
+  return [w, so, e, n];
 }
 
 const bus = new EventEmitter();
@@ -57,7 +63,7 @@ async function withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
   return p;
 }
 
-/** Same grid as engine/aeqe/hazard/grid.py (cell ids must match). */
+/** Same grid as engine/aeqe/maun/grid.py (cell ids must match). */
 export function makeGrid(bbox: [number, number, number, number], d: number) {
   const [w, s, e, n] = bbox;
   const cols = Math.max(1, Math.ceil((e - w) / d - 1e-9)), rows = Math.max(1, Math.ceil((n - s) / d - 1e-9));
@@ -113,11 +119,10 @@ export function inGeometry(g: Geo, lng: number, lat: number): boolean {
 }
 
 /**
- * Cells of a run with their covariates, all from data: the hazard layers (each layer separately, plus the combined
- * score), people per cell from the HRSL 30 m raster, and the requests already reported. A district limits the cells
- * to those whose centre lies inside its boundary.
+ * Cells of a run with their covariates, all from data: people per cell from the HRSL 30 m raster, and the requests
+ * already reported. A district limits the cells to those whose centre lies inside its boundary.
  */
-export async function buildCells(store: Store, engine: EngineClient, o: { bbox?: string | number[]; regionId?: string; cellDeg?: number; useHazard: boolean }) {
+export async function buildCells(store: Store, engine: EngineClient, o: { bbox?: string | number[]; regionId?: string; cellDeg?: number }) {
   let bbox: [number, number, number, number] | null = null;
   let geometry: Geo | null = null;
   let regionName: string | null = null;
@@ -142,11 +147,6 @@ export async function buildCells(store: Store, engine: EngineClient, o: { bbox?:
   if (geometry) base = base.filter((c) => { const m = center(c.bbox); return inGeometry(geometry!, m.lng, m.lat); });
   if (base.length < 12) throw Object.assign(new Error("the area must contain at least 12 cells: use smaller cells"), { statusCode: 400 });
 
-  let grid: HazardGrid | null = null;
-  if (o.useHazard) {
-    try { grid = await fetchGrid(engine, bbox, 3, cellDeg); } catch (e) { notes.push(`Hazard layer unavailable (${(e as Error).message}); the model learns from reports and people only.`); }
-  }
-  const hz = new Map((grid?.cells ?? []).map((c) => [c.cell_id, c]));
   let pop: Record<string, number> = {};
   try {
     const p = await engine.json<{ population: Record<string, number>; missing: string[]; source: string; errors: string[] }>("/maun/population",
@@ -160,15 +160,12 @@ export async function buildCells(store: Store, engine: EngineClient, o: { bbox?:
   const midLat = (bbox[1] + bbox[3]) / 2, midLng = (bbox[0] + bbox[2]) / 2;
   const cells: MaunCell[] = base.map((c) => {
     const ctr = center(c.bbox);
-    const h = hz.get(c.id);
-    const layers: Record<string, number> = {};
-    for (const [k, l] of Object.entries(h?.layers ?? {})) if (l.norm != null) layers[k] = l.norm;
-    return { ...c, hazard: h?.hazard_score ?? 0, layers, population: pop[c.id] ?? null, ...counts.get(c.id)!,
+    return { ...c, population: pop[c.id] ?? null, ...counts.get(c.id)!,
       area: `${ctr.lat >= midLat ? "North" : "South"}-${ctr.lng >= midLng ? "east" : "west"}` };
   });
   notes.push("Reported need counts each request, SOS or Drain Watch report in a cell as one household.");
-  notes.push("How need relates to each hazard layer, people and reports is learned from the field checks, not assumed.");
-  return { bbox, cellDeg, cells, notes, sources: grid?.sources ?? [] };
+  notes.push("How need relates to people and reports is learned from the field checks, not assumed.");
+  return { bbox, cellDeg, cells, notes };
 }
 
 const summary = (run: MaunRun) => {
@@ -225,14 +222,6 @@ export async function recordFieldCheck(store: Store, engine: EngineClient, task:
       await store.putRecord("maun_run", run);   // keep the result even if the engine is down; it is recomputed later
       if (!(e instanceof EngineError)) throw e;
     }
-    // a wave is complete and the range is widest somewhere: ask for sharper observation there (SIMULATED adapter)
-    const last = run.last;
-    if (last && last.pending?.length === 0 && last.observation_suggestion?.cells?.length) {
-      const o = await requestObservation(store, last.observation_suggestion.cells, "high",
-        `Maun run "${run.name}": stratum ${last.observation_suggestion.stratum}, ${last.observation_suggestion.reason}`, run.id, run.createdBy);
-      run.observationIds = [...(run.observationIds ?? []), o.id];
-      await store.putRecord("maun_run", run);
-    }
     return run;
   });
 }
@@ -246,22 +235,22 @@ export function maunRoutes(app: FastifyInstance, store: Store, engine: EngineCli
     throw e;
   };
 
-  app.post<{ Body: { name: string; bbox?: string | number[]; regionId?: string; cellDeg?: number; waveSize?: number; useHazard?: boolean; seed?: number } }>("/api/maun/runs", {
+  app.post<{ Body: { name: string; bbox?: string | number[]; regionId?: string; cellDeg?: number; waveSize?: number; seed?: number } }>("/api/maun/runs", {
     ...authority,
     schema: { body: { type: "object", required: ["name"], properties: { name: { type: "string", minLength: 2, maxLength: 120 },
       bbox: { anyOf: [{ type: "string" }, { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 }] }, regionId: { type: "string", maxLength: 120 },
-      cellDeg: { type: "number", minimum: 0.005, maximum: 0.2 }, waveSize: { type: "integer", minimum: 1, maximum: 200 }, useHazard: { type: "boolean" }, seed: { type: "integer" } } } },
+      cellDeg: { type: "number", minimum: 0.005, maximum: 0.2 }, waveSize: { type: "integer", minimum: 1, maximum: 200 }, seed: { type: "integer" } } } },
   }, async (req, reply) => {
     let built;
     try {
-      built = await buildCells(store, engine, { bbox: req.body.bbox, regionId: req.body.regionId, cellDeg: req.body.cellDeg, useHazard: req.body.useHazard !== false });
+      built = await buildCells(store, engine, { bbox: req.body.bbox, regionId: req.body.regionId, cellDeg: req.body.cellDeg });
     } catch (e) {
       return fail(reply, e);
     }
-    const { bbox, cellDeg, cells, notes, sources } = built;
+    const { bbox, cellDeg, cells, notes } = built;
     const run: MaunRun = { id: `maun-${randomUUID()}`, ownerId: req.userId!, createdAt: now(), name: req.body.name.trim(), bbox, cellDeg,
       seed: req.body.seed ?? Math.floor(Math.random() * 1e9), conf: 0.95, waveSize: req.body.waveSize ?? 30, cells, waves: [], results: {}, resultMeta: {},
-      looks: 0, hazardSources: sources, notes, simulated: false, observationIds: [], createdBy: req.userId!, last: null, designVersion: 2,
+      looks: 0, notes, simulated: false, createdBy: req.userId!, last: null, designVersion: 2,
       regionId: req.body.regionId ?? null };
     try {
       await computeAndStore(store, engine, run, run.waveSize);

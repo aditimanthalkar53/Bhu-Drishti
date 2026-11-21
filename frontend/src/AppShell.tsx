@@ -41,7 +41,6 @@ const UpdatesPage = lazy(() => import("./pages/disaster/UpdatesPage").then((m) =
 const TasksPage = lazy(() => import("./pages/disaster/TasksPage").then((m) => ({ default: m.TasksPage })));
 const RequestsPage = lazy(() => import("./pages/disaster/RequestsPage").then((m) => ({ default: m.RequestsPage })));
 const VolunteersPage = lazy(() => import("./pages/disaster/RequestsPage").then((m) => ({ default: m.VolunteersPage })));
-const HazardMapPage = lazy(() => import("./pages/disaster/HazardMapPage").then((m) => ({ default: m.HazardMapPage })));
 const CommandPage = lazy(() => import("./pages/disaster/CommandPage").then((m) => ({ default: m.CommandPage })));
 const EstimatesPage = lazy(() => import("./pages/disaster/EstimatesPage").then((m) => ({ default: m.EstimatesPage })));
 const SilentZonesPage = lazy(() => import("./pages/disaster/EstimatesPage").then((m) => ({ default: m.SilentZonesPage })));
@@ -92,7 +91,6 @@ const DNAV: NavItem[] = [
   { to: "/app/estimates", label: "Estimates", icon: I.chart, group: "Maun", roles: AUTH },
   { to: "/app/updates", label: "Updates", icon: I.bell, group: "Information" },
   { to: "/app/sachet", label: "SACHET alerts", icon: I.shield, group: "Information" },
-  { to: "/app/hazard", label: "Hazard map", icon: I.map, group: "Information" },
   { to: "/app/reports", label: "Reports", icon: I.report, group: "Records", roles: AUTH },
   { to: "/app/recipients", label: "Recipients", icon: I.people, group: "Records", roles: AUTH },
   { to: "/app/audit", label: "Audit log", icon: I.audit, group: "Records", roles: AUTH },
@@ -180,7 +178,6 @@ export function AppShell() {
             <Route path="drain" element={<DrainWatchPage />} />
             <Route path="offers" element={<OffersPage />} />
             <Route path="updates" element={<UpdatesPage />} />
-            <Route path="hazard" element={<HazardMapPage />} />
             <Route path="tasks" element={<ForRoles roles={["volunteer", "authority"]}><TasksPage /></ForRoles>} />
             <Route path="requests" element={<ForRoles roles={["authority"]}><RequestsPage /></ForRoles>} />
             <Route path="volunteers" element={<ForRoles roles={["authority"]}><VolunteersPage /></ForRoles>} />
