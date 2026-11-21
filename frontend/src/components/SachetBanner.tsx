@@ -1,19 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
+import { resolveAlert } from "../placeLookup";
 import { alertsForRegion, suggestedQuestion } from "../sachetLink";
 import type { Region } from "../types";
 
-interface Alert { id: string; title: string; event: string; severity: string | null; areaDesc: string | null; msgType: string | null; expires: string | null; instruction: string | null }
+interface Alert { id: string; title: string; event: string; severity: string | null; areaDesc: string | null; description: string | null; msgType: string | null; expires: string | null; instruction: string | null }
 
 const TONE: Record<string, string> = { extreme: "notice-error", severe: "notice-error", moderate: "notice-warn" };
+const active = (a: Alert) => a.msgType !== "Cancel" && !(a.expires && Date.parse(a.expires) < Date.now());
 
 /**
  * Explore ↔ SACHET: when the selected district is named in an active official alert, say so above the question form.
- * It only reads the alerts the SACHET page already shows (nothing is invented: no feed, no banner).
+ * It only reads the alerts the SACHET page already shows (nothing is invented: no feed, no banner). An alert counts when it
+ * names the district by its list name, or when the place it names lies inside the district (so "Balasore" finds Baleshwar).
  */
 export function SachetBanner({ region, onAsk }: { region: Region | undefined; onAsk(question: string): void }) {
   const [alerts, setAlerts] = useState<Alert[] | null>(null);
+  const [byLocation, setByLocation] = useState<Set<string>>(new Set());
   useEffect(() => {
     let live = true;
     api<{ state: string; alerts: Alert[] }>("/api/sachet/alerts")
@@ -21,7 +25,26 @@ export function SachetBanner({ region, onAsk }: { region: Region | undefined; on
       .catch(() => { if (live) setAlerts([]); });
     return () => { live = false; };
   }, []);
-  const hits = useMemo(() => alertsForRegion(region, alerts ?? []), [region, alerts]);
+
+  // only the few active alerts are looked up (cached, so reopening Explore costs nothing)
+  useEffect(() => {
+    setByLocation(new Set());
+    if (!region || region.kind !== "district" || !alerts) return;
+    let live = true;
+    for (const a of alerts.filter(active)) {
+      void resolveAlert(a).then((ds) => {
+        if (live && ds.some((d) => d.id === region.id)) setByLocation((s) => new Set(s).add(a.id));
+      });
+    }
+    return () => { live = false; };
+  }, [region, alerts]);
+
+  const hits = useMemo(() => {
+    const byName = alertsForRegion(region, alerts ?? []);
+    const ids = new Set(byName.map((a) => a.id));
+    return [...byName, ...(alerts ?? []).filter((a) => active(a) && byLocation.has(a.id) && !ids.has(a.id))];
+  }, [region, alerts, byLocation]);
+
   if (!region || hits.length === 0) return null;
   const q = suggestedQuestion(hits[0]);
   return (

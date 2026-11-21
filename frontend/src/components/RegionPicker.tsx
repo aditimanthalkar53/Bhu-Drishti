@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { resolveText, type Resolved } from "../placeLookup";
 import type { Region } from "../types";
 
 interface Props {
@@ -30,6 +31,19 @@ export function RegionPicker({ regions, value, onChange, disabled, label = "Regi
     return scored.slice(0, 60).map((x) => x.r);
   }, [regions, q]);
 
+  // nothing in the list matches the spelling ("Balasore" is listed as "Baleshwar"): look the place up on the map instead
+  const [looked, setLooked] = useState<{ q: string; found: Resolved[] } | null>(null);
+  const [looking, setLooking] = useState(false);
+  const term = q.trim();
+  useEffect(() => {
+    if (!open || matches.length > 0 || term.length < 3) { setLooked(null); setLooking(false); return; }
+    let live = true;
+    setLooking(true);
+    const t = setTimeout(() => { void resolveText(term, "search").then((found) => { if (live) { setLooked({ q: term, found }); setLooking(false); } }); }, 450);
+    return () => { live = false; clearTimeout(t); };
+  }, [open, matches.length, term]);
+  const suggestions = looked && looked.q === term ? looked.found.map((d) => regions.find((r) => r.id === d.id)).filter((r): r is Region => !!r) : [];
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(false); };
     document.addEventListener("mousedown", onDoc);
@@ -60,6 +74,7 @@ export function RegionPicker({ regions, value, onChange, disabled, label = "Regi
           if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive((a) => Math.min(a + 1, matches.length - 1)); }
           else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(a - 1, 0)); }
           else if (e.key === "Enter" && open && matches[active]) { e.preventDefault(); pick(matches[active]); }
+          else if (e.key === "Enter" && open && matches.length === 0 && suggestions[0]) { e.preventDefault(); pick(suggestions[0]); }
           else if (e.key === "Escape") setOpen(false);
         }}
       />
@@ -68,7 +83,18 @@ export function RegionPicker({ regions, value, onChange, disabled, label = "Regi
       )}
       {open && (
         <ul className="picker-list" id={`${id}-list`} role="listbox">
-          {matches.length === 0 && <li className="muted small picker-empty">No district matches “{q}”.</li>}
+          {matches.length === 0 && !looking && suggestions.length === 0 && <li className="muted small picker-empty">No district matches “{q}”.</li>}
+          {matches.length === 0 && looking && <li className="muted small picker-empty">Looking up “{term}” on the map…</li>}
+          {matches.length === 0 && suggestions.length > 0 && (
+            <li role="presentation">
+              <div className="picker-group" aria-hidden="true">No district is spelled “{term}”. This place lies in:</div>
+              {suggestions.map((r) => (
+                <div key={r.id} role="option" aria-selected={r.id === value} className="picker-opt" onMouseDown={(e) => { e.preventDefault(); pick(r); }}>
+                  <span>{r.name}</span><span className="muted small">{r.state}{r.area_km2 ? ` · ${Math.round(r.area_km2).toLocaleString("en-IN")} km²` : ""}</span>
+                </div>
+              ))}
+            </li>
+          )}
           {matches.map((r, i) => {
             const head = r.kind !== lastKind ? (lastKind = r.kind ?? "district", KIND_LABEL[lastKind]) : null;
             return (

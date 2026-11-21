@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, post } from "../api";
 import { useAuth } from "../auth";
 import { isHiddenFor } from "../hiddenPages";
+import { useAlertDistricts, useInView } from "../placeLookup";
 import { exploreUrl, matchDistricts, suggestedQuestion } from "../sachetLink";
 import type { Region } from "../types";
 import { fmtDate } from "../format";
@@ -127,24 +128,33 @@ export function SachetPage() {
   );
 }
 
-/** For an alert: one button per district it names, opening Explore on that district with the question that fits the hazard. */
+/** For an alert: one button per district it names, opening Explore on that district with the question that fits the hazard.
+ *  Districts are found by name straight away and by location from the server (so "Balasore" finds Baleshwar). */
 function ExploreLinks({ alert, regions, loading }: { alert: SachetAlert; regions: Region[]; loading: boolean }) {
-  const districts = useMemo(() => matchDistricts(alert, regions), [alert, regions]);
+  const [ref, seen] = useInView<HTMLDivElement>();
+  const { found, loading: looking } = useAlertDistricts(alert, seen && regions.length > 0);
+  const districts = useMemo(() => {
+    const byId = new Map<string, Region>();
+    for (const r of matchDistricts(alert, regions)) byId.set(r.id, r);
+    for (const d of found) { const r = regions.find((x) => x.id === d.id); if (r) byId.set(r.id, r); }
+    return [...byId.values()].slice(0, 8);
+  }, [alert, regions, found]);
   const q = suggestedQuestion(alert);
   if (loading && !regions.length) return null;
   return (
-    <div className="stack explore-links">
+    <div className="stack explore-links" ref={ref}>
       <p className="small"><strong>See what satellites show for this area:</strong></p>
       <div className="row-actions">
         {districts.map((r) => (
           <Link key={r.id} className="btn btn-small btn-primary btn-inline" to={exploreUrl(r, q)}>Explore {r.name}{r.state ? `, ${r.state}` : ""}</Link>
         ))}
-        {districts.length === 0 && <Link className="btn btn-small" to="/app">Open Explore and search the place</Link>}
+        {districts.length === 0 && !looking && <Link className="btn btn-small" to="/app">Open Explore and search the place</Link>}
+        {districts.length === 0 && looking && <span className="muted small">Finding the district on the map…</span>}
       </div>
       <p className="muted small">
         {districts.length
           ? q ? `Opens Explore on the district with the question “${q}”. You can change it before you run it.` : "Opens Explore on the district. Ask any question about it there."
-          : "No district name from the list was found in this alert's area text, so search the place in Explore yourself."}
+          : looking ? "" : "Could not tell which district this alert is about, so search the place in Explore yourself."}
       </p>
     </div>
   );

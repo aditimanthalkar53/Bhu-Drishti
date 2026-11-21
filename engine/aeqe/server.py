@@ -197,6 +197,22 @@ def regions(geometry: bool = False, q: str = "", kind: str = ""):
     return out
 
 
+class ResolveRequest(BaseModel):
+    text: str
+    mode: str = "alert"        # "alert": text of an official alert; "search": a phrase typed by a person
+
+
+@app.post("/regions/resolve")
+def regions_resolve(req: ResolveRequest):
+    """Which districts does this text mean? Matched by location, so 'Balasore' finds Baleshwar (see aeqe/places.py)."""
+    from .places import resolve
+    from .sources.registry import source_cache
+
+    if len(req.text) > 3000 or req.mode not in ("alert", "search"):
+        raise HTTPException(422, "text up to 3000 characters; mode 'alert' or 'search'")
+    return {"districts": resolve(req.text, provider.regions(), req.mode, cache=source_cache())}
+
+
 @app.get("/regions/{region_id}")
 def region_detail(region_id: str):
     r = provider.region(region_id)
