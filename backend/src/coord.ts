@@ -6,7 +6,7 @@ import { confidenceOf, fitConfidence, haversineM, notifyAuthorities, now, OFFER_
 import type { Report } from "./domain.js";
 import { sendMail, smtpConfigured } from "./email.js";
 import type { EngineClient } from "./engine-client.js";
-import { recordFieldCheck } from "./maun.js";
+import { nameAreaTasks, recordFieldCheck } from "./maun.js";
 import { detectLanguage, runIntake } from "./intake.js";
 import { RateLimiter } from "./ratelimit.js";
 import { guard, type Profile } from "./roles.js";
@@ -394,6 +394,7 @@ export function coordRoutes(app: FastifyInstance, store: Store, engine: EngineCl
     if (req.role !== "authority") list = list.filter((t) => t.status === "open" || t.claimedBy === req.userId);
     if (req.query.status) list = list.filter((t) => t.status === req.query.status);
     if (req.query.runId) list = list.filter((t) => t.runId === req.query.runId);
+    list = await nameAreaTasks(store, engine, list);   // area checks made before place names existed get named once
     return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   });
 

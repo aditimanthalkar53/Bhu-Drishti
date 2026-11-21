@@ -27,10 +27,14 @@ export interface Offer {
 export interface Task {
   id: string; createdAt: string; title: string; type: "field_check" | "rescue" | "delivery" | "assessment" | "general"; description: string;
   requestId: string | null; runId: string | null; cellId: string | null; lat: number | null; lng: number | null;
+  /** area checks: "Ganak Kuchi Gaon" or "4 km south-west of Budrutop" */
+  placeName?: string | null;
   status: "open" | "claimed" | "done" | "unreachable" | "cancelled"; claimedBy: string | null; claimedByName: string | null; note: string | null; result: Record<string, unknown> | null;
 }
 export interface SilentZone {
   id: string; bbox: [number, number, number, number] | null; reported: number; reason: string; status: string; action: string;
+  /** the nearest real place, e.g. "4 km south-west of Budrutop" */
+  place?: string | null;
   /** estimated or observed households in need beyond reports */
   estimated_gap: number | null;
   /** one-sided test p-value (Benjamini-Hochberg controlled); null for directly observed gaps */
@@ -188,7 +192,7 @@ export function SilentCells({ zones }: { zones: SilentZone[] }) {
     <>
       {zones.filter((z) => z.bbox).map((z) => (
         <Rectangle key={z.id} bounds={[[z.bbox![1], z.bbox![0]], [z.bbox![3], z.bbox![2]]]} pathOptions={{ color: cssVar("--violet"), weight: 2, dashArray: "4 3", fillColor: cssVar("--violet"), fillOpacity: 0.18 }}>
-          <Tooltip>Silent zone {z.id}: {z.reason}. {z.action}</Tooltip>
+          <Tooltip>Silent zone: {z.place ?? z.id}. {z.reason}. {z.action}</Tooltip>
         </Rectangle>
       ))}
     </>

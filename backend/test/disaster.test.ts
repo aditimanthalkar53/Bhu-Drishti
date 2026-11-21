@@ -20,6 +20,10 @@ let computeCalls: any[] = [];
 async function fakeEngine(): Promise<FastifyInstance> {
   const f = Fastify();
   f.get("/health", async () => ({ ok: true }));
+  f.post("/places/names", async (req: any) => ({
+    names: Object.fromEntries((req.body.points as { id: string; lat: number }[]).map((p, i) => [p.id, { label: i % 2 ? `${i} km north of Testpur` : "Testpur", place: "Testpur", km: i, direction: i % 2 ? "north" : null }])),
+    source: "GeoNames (fake)",
+  }));
   f.post("/maun/population", async (req: any) => {
     const cells = req.body.cells as { id: string }[];
     return { population: Object.fromEntries(cells.slice(1).map((c, i) => [c.id, 1000 + i])), missing: [cells[0].id], source: "HRSL (fake)", errors: [] };
@@ -38,7 +42,7 @@ async function fakeEngine(): Promise<FastifyInstance> {
     const done = Object.keys(s.results).length;
     return { status: done >= 3 ? "estimating" : "collecting", overall: done >= 3 ? { estimate: 10, lo: 5, hi: 15, reported: 2, hidden: 8, method: "stratified" } : null,
       new_wave: nw, pending, unreachable: Object.keys(s.results).filter((k) => s.results[k].unreachable), checks_done: done, cells: [], strata: [], waves: [],
-      silent_zones: [{ id: s.cells[1].id, reason: "many people, no reports", action: "send a team" }], observation_suggestion: { stratum: 0, reason: "widest", cells: [s.cells[5].id] },
+      silent_zones: [{ id: s.cells[1].id, bbox: s.cells[1].bbox, reason: "many people, no reports", action: "send a team" }], observation_suggestion: { stratum: 0, reason: "widest", cells: [s.cells[5].id] },
       trace: [{ step: "design" }] };
   });
   await f.listen({ port: 0, host: "127.0.0.1" });
@@ -342,6 +346,9 @@ test("Maun run: cells get reports and people, field-check tasks are created, res
   const tasks = (await app.inject({ url: `/api/tasks?runId=${id}`, headers: vol.h })).json();
   assert.equal(tasks.length, 3);
   assert.ok(tasks.every((t: any) => t.type === "field_check"));
+  assert.ok(tasks.every((t: any) => t.placeName && t.title === `Area check: ${t.placeName}`), "areas are named after real places, not grid codes");
+  const silent = (await app.inject({ url: "/api/maun/silent-zones", headers: boss })).json();
+  assert.ok(silent.zones.every((z: any) => typeof z.place === "string"), "silent zones carry the place name too");
   // a volunteer cannot enter a result for a cell whose task they have not claimed
   assert.equal((await app.inject({ method: "POST", url: `/api/maun/runs/${id}/results`, headers: vol.h, payload: { cellId: tasks[0].cellId, households: 2 } })).statusCode, 403);
   await app.inject({ method: "POST", url: `/api/tasks/${tasks[0].id}/claim`, headers: vol.h });

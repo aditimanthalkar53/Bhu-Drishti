@@ -232,6 +232,48 @@ def regions(geometry: bool = False, q: str = "", kind: str = ""):
     return out
 
 
+class NamesRequest(BaseModel):
+    points: list[dict[str, Any]]
+
+
+@app.post("/places/names")
+def places_names(req: NamesRequest):
+    """Human names for points ("4 km south-west of Budrutop") from the GeoNames list of Indian places (aeqe/gazetteer.py)."""
+    from .gazetteer import CREDIT, load
+
+    if len(req.points) > 2500:
+        raise HTTPException(422, "at most 2500 points")
+    try:
+        g = load(DATA_DIR)
+    except Exception as e:  # noqa: BLE001 - first use needs the download; without it callers keep their own labels
+        return {"names": {}, "source": CREDIT, "error": f"place names unavailable ({type(e).__name__})"}
+    names = {}
+    for p in req.points:
+        try:
+            lab = g.label(float(p["lat"]), float(p["lon"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if lab:
+            names[str(p.get("id", f"{p['lat']},{p['lon']}"))] = lab
+    return {"names": names, "source": CREDIT}
+
+
+class ResolveRequest(BaseModel):
+    text: str
+    mode: str = "alert"        # "alert": text of an official alert; "search": a phrase typed by a person
+
+
+@app.post("/regions/resolve")
+def regions_resolve(req: ResolveRequest):
+    """Which districts does this text mean? Matched by location, so 'Balasore' finds Baleshwar (see aeqe/places.py)."""
+    from .places import resolve
+    from .sources.registry import source_cache
+
+    if len(req.text) > 3000 or req.mode not in ("alert", "search"):
+        raise HTTPException(422, "text up to 3000 characters; mode 'alert' or 'search'")
+    return {"districts": resolve(req.text, provider.regions(), req.mode, cache=source_cache())}
+
+
 @app.get("/regions/{region_id}")
 def region_detail(region_id: str):
     r = provider.region(region_id)

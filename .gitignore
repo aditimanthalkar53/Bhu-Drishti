@@ -24,3 +24,7 @@ docker-compose.override.yml
 *.hdf5
 *.nc4
 backups/
+
+# downloaded GeoNames place-name table (engine/aeqe/gazetteer.py)
+data/geonames/
+engine/data/geonames/

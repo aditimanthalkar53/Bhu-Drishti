@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { cssVar } from "../../theme";
+import { isHiddenFor } from "../../hiddenPages";
 import { ErrorNote, Pill, useData } from "../common";
 import { boundsOf, Legend, MapFrame, OfferDots, REQUEST_LABEL, RequestDots, Severity, SilentCells, TaskDots,
   type HelpRequest, type Offer, type SilentZone, type Task } from "./shared";
@@ -10,7 +11,7 @@ export function CommandPage() {
   const offers = useData<Offer[]>("/api/offers");
   const tasks = useData<Task[]>("/api/tasks");
   const silent = useData<{ run: { name: string; simulated: boolean } | null; zones: SilentZone[] }>("/api/maun/silent-zones");
-  const updates = useData<{ status: string }[]>("/api/updates");
+  const updates = useData<{ status: string }[]>(isHiddenFor("authority", "/app/updates") ? null : "/api/updates");
   const all = reqs.data ?? [];
   const live = all.filter((r) => r.status !== "resolved" && r.status !== "cancelled");
   const sos = live.filter((r) => r.source === "sos");
@@ -36,7 +37,7 @@ export function CommandPage() {
         <Kpi to="/app/tasks" label="Open tasks" value={openTasks.length} />
         <Kpi to="/app/offers" label="Offers available" value={avail.length} />
         <Kpi to="/app/silent-zones" label="Silent zones" value={zones.length} tone={zones.length ? "warn" : undefined} />
-        <Kpi to="/app/updates" label="Bulletins awaiting approval" value={(updates.data ?? []).filter((u) => u.status === "pending_approval").length} />
+        {!isHiddenFor("authority", "/app/updates") && <Kpi to="/app/updates" label="Bulletins awaiting approval" value={(updates.data ?? []).filter((u) => u.status === "pending_approval").length} />}
       </div>
       <section className="card">
         <MapFrame height={520} bounds={boundsOf([...live, ...avail], zones.map((z) => z.bbox))}>
@@ -67,7 +68,7 @@ export function CommandPage() {
           <h2>Silent zones</h2>
           {zones.length === 0 && <p className="muted small">None flagged. Start a run on the <Link to="/app/estimates">Estimates</Link> page to look for unreported need.</p>}
           <ul className="list">
-            {zones.slice(0, 6).map((z) => <li key={z.id}><strong>{z.id}</strong> <span className="small">{z.reason}</span><p className="small muted">{z.action}</p></li>)}
+            {zones.slice(0, 6).map((z) => <li key={z.id}><strong>{z.place ?? z.id}</strong> <span className="small">{z.reason}</span><p className="small muted">{z.action}</p></li>)}
           </ul>
         </section>
       </div>

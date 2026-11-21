@@ -6,11 +6,14 @@ import { WEBHOOK_EVENTS, type AOI, type Alert, type Escalation, type AuditEntry,
 import { smtpConfigured } from "./email.js";
 import { EngineClient, EngineError } from "./engine-client.js";
 import { MonitorScheduler, nextRun } from "./monitors.js";
+import { RateLimiter } from "./ratelimit.js";
 import type { RecordKind, Store, StoredRecord } from "./store/types.js";
 import { deliver, isAllowedUrl, newSecret } from "./webhooks.js";
 import { ackValid, confirmByRecipient, escalate, LEVELS, MAX_LEVEL, wouldLoop } from "./escalation.js";
 
 type IdParams = { Params: { id: string } };
+/** Place lookups call a free public geocoder (through the engine, cached): at most 300 per user per 10 minutes. */
+const resolveLimiter = new RateLimiter(300, 10 * 60_000);
 const now = () => new Date().toISOString();
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -53,6 +56,16 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     if (req.query.kind) qs.set("kind", req.query.kind);
     if (req.query.geometry === "true") qs.set("geometry", "true");
     try { return await engine.get(`/regions?${qs}`); } catch (e) { return engineErr(reply, e); }
+  });
+
+  /** Which districts does this text mean? Matched by location, so "Balasore" finds Baleshwar (engine: aeqe/places.py). */
+  app.post<{ Body: { text: string; mode?: "alert" | "search" } }>("/api/regions/resolve", {
+    ...auth,
+    schema: { body: { type: "object", required: ["text"], properties: { text: { type: "string", minLength: 2, maxLength: 3000 }, mode: { type: "string", enum: ["alert", "search"] } } } },
+  }, async (req, reply) => {
+    if (!resolveLimiter.check(`resolve:${req.userId}`)) return reply.code(429).send({ error: "too many place lookups — try again in a few minutes" });
+    try { return await engine.json("/regions/resolve", { method: "POST", body: JSON.stringify({ text: req.body.text, mode: req.body.mode ?? "alert" }) }, 90_000); }
+    catch (e) { return engineErr(reply, e); }
   });
 
   app.get<IdParams>("/api/regions/:id", auth, async (req, reply) => {
