@@ -7,6 +7,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import { ago, fmt } from "../format";
 import type { AOI, Alert, Monitor, Region, Report, Session, SourceStatus } from "../types";
+import { isHiddenFor } from "../hiddenPages";
 import { ErrorNote, Pill, ReportStatus, useData } from "./common";
 
 interface Dash {
@@ -21,7 +22,8 @@ interface Dash {
 export function DashboardPage() {
   const { data, error, loading, reload } = useData<Dash>("/api/dashboard");
   const c = data?.counts;
-  const firstRun = data && data.aois.length === 0 && data.monitors.length === 0;
+  const hide = (p: string) => isHiddenFor("authority", p);   // pages hidden from the website (see hiddenPages.ts)
+  const firstRun = data && data.aois.length === 0 && data.monitors.length === 0 && !hide("/app/areas");
   return (
     <main className="page">
       <section className="hero">
@@ -42,17 +44,17 @@ export function DashboardPage() {
       ) : (
         <div className="kpis">
           <Kpi label="Open alerts" value={c?.open_alerts} tone={c?.open_alerts ? "error" : undefined} to="/app/alerts" />
-          <Kpi label="Active monitors" value={c?.active_monitors} sub={c ? `of ${c.monitors}` : ""} to="/app/monitors" />
-          <Kpi label="Areas of interest" value={c?.aois} to="/app/areas" />
+          {!hide("/app/monitors") && <Kpi label="Active monitors" value={c?.active_monitors} sub={c ? `of ${c.monitors}` : ""} to="/app/monitors" />}
+          {!hide("/app/areas") && <Kpi label="Areas of interest" value={c?.aois} to="/app/areas" />}
           <Kpi label="Reports awaiting approval" value={c?.reports_pending} tone={c?.reports_pending ? "warn" : undefined} to="/app/reports" />
         </div>
       )}
       <div className="dash-grid">
-        <SourcesCard />
-        <section className="card dash-map-card">
+        {!hide("/app/data") && <SourcesCard />}
+        {!hide("/app/areas") && <section className="card dash-map-card">
           <h2>Monitored areas</h2>
           {data && data.aois.length > 0 ? <AoiMap aois={data.aois} monitors={data.monitors} /> : <p className="muted small">Add an area of interest to see it here.</p>}
-        </section>
+        </section>}
         <section className="card">
           <h2>Open alerts</h2>
           {data && data.alerts.length === 0 && <p className="muted small">No open alerts. Monitors raise one when a threshold is crossed.</p>}
@@ -81,7 +83,7 @@ export function DashboardPage() {
             ))}
           </ul>
         </section>
-        <section className="card">
+        {!hide("/app/monitors") && <section className="card">
           <h2>Monitors</h2>
           {data && data.monitors.length === 0 && <p className="muted small">No monitors yet.</p>}
           <table className="tbl">
@@ -96,7 +98,7 @@ export function DashboardPage() {
               ))}
             </tbody>
           </table>
-        </section>
+        </section>}
         <section className="card">
           <h2>Reports</h2>
           {data && data.reports.length === 0 && <p className="muted small">Reports created from runs and monitors appear here.</p>}

@@ -4,6 +4,7 @@ import { patch, post } from "../api";
 import { ago, fmt, fmtDate } from "../format";
 import { LEVELS, type Alert } from "../types";
 import { Empty, ErrorNote, Page, Pill, useAction, useData } from "./common";
+import { isHiddenFor } from "../hiddenPages";
 
 export function AlertsPage() {
   const alerts = useData<Alert[]>("/api/alerts");
@@ -33,7 +34,7 @@ export function AlertsPage() {
         </div>
       }>
       <ErrorNote error={alerts.error ?? act.error} />
-      {alerts.data && list.length === 0 && <Empty title={filter === "open" ? "No open alerts" : "No alerts yet"}>Alerts appear when a <Link to="/app/monitors">monitor</Link> crosses its threshold.</Empty>}
+      {alerts.data && list.length === 0 && <Empty title={filter === "open" ? "No open alerts" : "No alerts yet"}>Alerts appear when a {isHiddenFor("authority", "/app/monitors") ? "monitor" : <Link to="/app/monitors">monitor</Link>} crosses its threshold.</Empty>}
       <div className="stack">
         {list.map((a) => (
           <article key={a.id} className={`card alert-card alert-${a.status}`}>

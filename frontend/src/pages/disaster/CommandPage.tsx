@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { cssVar } from "../../theme";
+import { isHiddenFor } from "../../hiddenPages";
 import { ErrorNote, Pill, useData } from "../common";
 import { boundsOf, HazardCells, heat, Legend, MapFrame, OfferDots, REQUEST_LABEL, RequestDots, Severity, SilentCells, TaskDots,
   type HazardGrid, type HelpRequest, type Offer, type SilentZone, type Task } from "./shared";
@@ -11,7 +12,7 @@ export function CommandPage() {
   const tasks = useData<Task[]>("/api/tasks");
   const hazard = useData<HazardGrid>("/api/hazard/latest");
   const silent = useData<{ run: { name: string; simulated: boolean } | null; zones: SilentZone[] }>("/api/maun/silent-zones");
-  const updates = useData<{ status: string }[]>("/api/updates");
+  const updates = useData<{ status: string }[]>(isHiddenFor("authority", "/app/updates") ? null : "/api/updates");
   const all = reqs.data ?? [];
   const live = all.filter((r) => r.status !== "resolved" && r.status !== "cancelled");
   const sos = live.filter((r) => r.source === "sos");
@@ -37,7 +38,7 @@ export function CommandPage() {
         <Kpi to="/app/tasks" label="Open tasks" value={openTasks.length} />
         <Kpi to="/app/offers" label="Offers available" value={avail.length} />
         <Kpi to="/app/silent-zones" label="Silent zones" value={zones.length} tone={zones.length ? "warn" : undefined} />
-        <Kpi to="/app/updates" label="Bulletins awaiting approval" value={(updates.data ?? []).filter((u) => u.status === "pending_approval").length} />
+        {!isHiddenFor("authority", "/app/updates") && <Kpi to="/app/updates" label="Bulletins awaiting approval" value={(updates.data ?? []).filter((u) => u.status === "pending_approval").length} />}
       </div>
       <section className="card">
         <MapFrame height={520} bounds={boundsOf([...live, ...avail], [...zones.map((z) => z.bbox), hazard.data?.bbox ?? null])}>
@@ -49,7 +50,7 @@ export function CommandPage() {
         </MapFrame>
         <Legend items={[["Life in danger", cssVar("--error")], ["Urgent", cssVar("--ochre")], ["Request", cssVar("--water")], ["Offer", cssVar("--ok")],
           ["Task", cssVar("--cyan"), true], ["Silent zone", cssVar("--violet"), true], ["Hazard", heat(0.8)]]} />
-        {!hazard.data?.cells.length && <p className="muted small">No hazard layer loaded yet: open the <Link to="/app/hazard">Hazard map</Link> and load your area.</p>}
+        {!hazard.data?.cells.length && <p className="muted small">No hazard layer is loaded on this map. A new estimation run on the <Link to="/app/estimates">Estimates</Link> page reads the hazard sources for its area.</p>}
         {silent.data?.run?.simulated && <p className="notice notice-warn">Silent zones come from a SIMULATED demo run.</p>}
       </section>
       <div className="dash-grid">

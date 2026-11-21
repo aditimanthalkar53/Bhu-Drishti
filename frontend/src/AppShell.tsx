@@ -4,6 +4,7 @@ import { api, post } from "./api";
 import { useAuth, type Role } from "./auth";
 import { DISASTER, PRODUCT } from "./featureFlags";
 import { RoleAuthPage, RoleChooser, RoleChooserModal } from "./pages/RoleAuthPage";
+import { isHiddenFor } from "./hiddenPages";
 import { ago } from "./format";
 import type { Notification, Region } from "./types";
 import { gsap, pageEnter, useGsap } from "./motion";
@@ -105,9 +106,11 @@ const DNAV: NavItem[] = [
 function navFor(role: Role | undefined): NavItem[] {
   const r = role ?? "citizen";
   const mine = DNAV.filter((n) => !n.roles || n.roles.includes(r));
-  if (DISASTER || r !== "authority") return mine;
-  const seen = new Set(NAV.map((n) => n.to));
-  return [...NAV, ...mine.filter((n) => !seen.has(n.to) && (seen.add(n.to), true))];
+  const all = DISASTER || r !== "authority" ? mine : (() => {
+    const seen = new Set(NAV.map((n) => n.to));
+    return [...NAV, ...mine.filter((n) => !seen.has(n.to) && (seen.add(n.to), true))];
+  })();
+  return all.filter((n) => !isHiddenFor(r, n.to));
 }
 
 /** Each role's home: authorities get the dashboard (or the command view in the disaster edition). */
@@ -120,6 +123,11 @@ function Home() {
 function ForRoles({ roles, children }: { roles: Role[]; children: ReactNode }) {
   const { user } = useAuth();
   return roles.includes(user?.role ?? "citizen") ? <>{children}</> : <Navigate to="/app/dashboard" replace />;
+}
+/** A page hidden for this role (see hiddenPages.ts): the address redirects to the role's home. */
+function Visible({ path, children }: { path: string; children: ReactNode }) {
+  const { user } = useAuth();
+  return isHiddenFor(user?.role, path) ? <Navigate to="/app/dashboard" replace /> : <>{children}</>;
 }
 /** Original satellite and administration pages: authorities only; hidden altogether in the disaster edition. */
 const authorityOnly = (el: ReactNode, keepInDisaster = false) =>
@@ -159,19 +167,19 @@ export function AppShell() {
           <Route path="dashboard" element={<Home />} />
           <Route path="detect" element={authorityOnly(<DetectionsPage />)} />
           <Route path="twins" element={authorityOnly(<TwinsPage />)} />
-          <Route path="drift" element={authorityOnly(<DriftPage />)} />
-          <Route path="areas" element={authorityOnly(<AreasPage />)} />
-          <Route path="monitors" element={authorityOnly(<MonitorsPage />)} />
+          <Route path="drift" element={<Visible path="/app/drift">{authorityOnly(<DriftPage />)}</Visible>} />
+          <Route path="areas" element={<Visible path="/app/areas">{authorityOnly(<AreasPage />)}</Visible>} />
+          <Route path="monitors" element={<Visible path="/app/monitors">{authorityOnly(<MonitorsPage />)}</Visible>} />
           <Route path="alerts" element={authorityOnly(<AlertsPage />, true)} />
           <Route path="sachet" element={<SachetPage />} />
           <Route path="reports" element={authorityOnly(<ReportsPage />, true)} />
           <Route path="reports/:id" element={authorityOnly(<ReportDetailPage />, true)} />
           <Route path="recipients" element={authorityOnly(<RecipientsPage />, true)} />
           <Route path="history" element={authorityOnly(<HistoryPage />)} />
-          <Route path="data" element={authorityOnly(<DataCatalogPage />, true)} />
+          <Route path="data" element={<Visible path="/app/data">{authorityOnly(<DataCatalogPage />, true)}</Visible>} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="usage" element={authorityOnly(<UsagePage />)} />
-          <Route path="audit" element={authorityOnly(<AuditPage />, true)} />
+          <Route path="audit" element={<Visible path="/app/audit">{authorityOnly(<AuditPage />, true)}</Visible>} />
           {/* disaster coordination (Maun): available in both editions */}
           <>
             <Route path="command" element={<ForRoles roles={["authority"]}><CommandPage /></ForRoles>} />
@@ -179,8 +187,8 @@ export function AppShell() {
             <Route path="my-requests" element={<MyRequestsPage />} />
             <Route path="drain" element={<DrainWatchPage />} />
             <Route path="offers" element={<OffersPage />} />
-            <Route path="updates" element={<UpdatesPage />} />
-            <Route path="hazard" element={<HazardMapPage />} />
+            <Route path="updates" element={<Visible path="/app/updates"><UpdatesPage /></Visible>} />
+            <Route path="hazard" element={<Visible path="/app/hazard"><HazardMapPage /></Visible>} />
             <Route path="tasks" element={<ForRoles roles={["volunteer", "authority"]}><TasksPage /></ForRoles>} />
             <Route path="requests" element={<ForRoles roles={["authority"]}><RequestsPage /></ForRoles>} />
             <Route path="volunteers" element={<ForRoles roles={["authority"]}><VolunteersPage /></ForRoles>} />
@@ -298,7 +306,7 @@ function GlobalSearch() {
   }, []);
   const load = () => { if (!regions) api<Region[]>("/api/regions").then(setRegions).catch(() => setRegions([])); };
   const term = q.trim().toLowerCase();
-  const pages = term ? NAV.filter((n) => n.label.toLowerCase().includes(term)).slice(0, 4) : [];
+  const pages = term ? NAV.filter((n) => !isHiddenFor("authority", n.to) && n.label.toLowerCase().includes(term)).slice(0, 4) : [];
   const places = term && regions
     ? regions.filter((r) => `${r.name} ${r.state ?? ""}`.toLowerCase().includes(term)).slice(0, 8) : [];
   const items = [
@@ -351,7 +359,7 @@ function UserMenu({ user, onLogout }: { user: NonNullable<HeaderProps["user"]>; 
           <div className="menu-head"><strong>{user.name}</strong><span className="muted small">{user.email}</span></div>
           <NavLink role="menuitem" className="menu-item" to="/app/settings" onClick={() => setOpen(false)}>{user.role === "authority" && !DISASTER ? "Settings & API keys" : "Settings"}</NavLink>
           {user.role === "authority" && !DISASTER && <NavLink role="menuitem" className="menu-item" to="/app/usage" onClick={() => setOpen(false)}>Usage</NavLink>}
-          {user.role === "authority" && <NavLink role="menuitem" className="menu-item" to="/app/audit" onClick={() => setOpen(false)}>Audit log</NavLink>}
+          {user.role === "authority" && !isHiddenFor(user.role, "/app/audit") && <NavLink role="menuitem" className="menu-item" to="/app/audit" onClick={() => setOpen(false)}>Audit log</NavLink>}
           <button role="menuitem" className="menu-item" onClick={onLogout}>Sign out</button>
         </div>
       )}
