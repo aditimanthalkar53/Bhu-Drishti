@@ -8,6 +8,9 @@ WORKDIR /src
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
+# disaster (default: the Maun coordination product) or full; pass FEATURE_MODE=full at run time too
+ARG VITE_FEATURE_MODE=disaster
+ENV VITE_FEATURE_MODE=$VITE_FEATURE_MODE
 RUN npm run build
 
 # ---------- API
