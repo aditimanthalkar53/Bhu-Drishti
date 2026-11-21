@@ -13,7 +13,9 @@ from typing import Any
 
 import httpx
 
-OVERPASS_URLS = ("https://overpass-api.de/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter")
+# public Overpass instances (https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances), tried in order
+OVERPASS_URLS = ("https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
+                 "https://maps.mail.ru/osm/tools/overpass/api/interpreter", "https://overpass.kumi.systems/api/interpreter")
 USER_AGENT = "BhuDrishti/0.2 (environmental monitoring)"
 MAX_SPAN_DEG = 1.5          # widest box sent to Overpass
 MAX_ELEMENTS = 1500
@@ -117,21 +119,44 @@ def _unavailable(reason: str, bbox: dict[str, float]) -> dict[str, Any]:
             "geojson": {"type": "FeatureCollection", "features": []}}
 
 
-def overpass_query(query: str, post=httpx.post, timeout: float = TIMEOUT_S) -> dict[str, Any]:
-    """Run one query, moving to the next public server when one is overloaded (the main one often answers 502/504)."""
+RETRY_STATUSES = {429, 502, 503, 504}
+MAX_RETRY_WAIT_S = 8.0
+
+
+def overpass_query(query: str, post=httpx.post, timeout: float = TIMEOUT_S, sleep=time.sleep, budget_s: float | None = None) -> dict[str, Any]:
+    """Run one query, moving to the next public server when one is overloaded (they often answer 429/502/504).
+
+    If every server is busy, wait once (the server's Retry-After, at most a few seconds) and go round again.
+    ``budget_s`` caps the total time, so a caller with its own deadline gets an answer or an error in time."""
     last: Exception | None = None
-    for url in OVERPASS_URLS:
-        try:
-            resp = post(url, data={"data": query}, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-            resp.raise_for_status()
-            payload = resp.json()
-            # a query that times out on the server still answers 200, with no elements and a "remark"
-            if "error" in str(payload.get("remark", "")).lower() or "timed out" in str(payload.get("remark", "")).lower():
-                raise ValueError(f"Overpass: {str(payload['remark'])[:120]}")
-            return payload
-        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.TransportError, ValueError) as exc:
-            last = exc
-    assert last is not None
+    start = time.monotonic()
+    left = lambda: float("inf") if budget_s is None else budget_s - (time.monotonic() - start)  # noqa: E731
+    for attempt in range(2):
+        wait = 0.0
+        for url in OVERPASS_URLS:
+            if left() < 5:
+                break
+            try:
+                resp = post(url, data={"data": query}, headers={"User-Agent": USER_AGENT}, timeout=min(timeout, left()))
+                resp.raise_for_status()
+                payload = resp.json()
+                # a query that times out on the server still answers 200, with no elements and a "remark"
+                if "error" in str(payload.get("remark", "")).lower() or "timed out" in str(payload.get("remark", "")).lower():
+                    raise ValueError(f"Overpass: {str(payload['remark'])[:120]}")
+                return payload
+            except httpx.HTTPStatusError as exc:
+                last = exc
+                if exc.response.status_code in RETRY_STATUSES:
+                    try:
+                        wait = max(wait, float(exc.response.headers.get("retry-after", 0)))
+                    except ValueError:
+                        pass
+            except (httpx.TimeoutException, httpx.TransportError, ValueError) as exc:
+                last = exc
+        if attempt == 0 and left() > 15:
+            sleep(min(max(wait, 2.0), MAX_RETRY_WAIT_S))
+    if last is None:
+        raise httpx.TimeoutException("no OpenStreetMap server answered within the time allowed")
     raise last
 
 
