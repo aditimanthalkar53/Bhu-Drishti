@@ -184,3 +184,13 @@ def test_fraction_per_tile():
     ys = np.array([0.75, 0.25])
     arr = np.array([[1, 1, 0, 0], [1, 1, 0, 1]], dtype=float)
     np.testing.assert_allclose(P.fraction_per_tile(arr, xs, ys, boxes), [1.0, 0.25])
+
+
+def test_llm_compiler_accepts_confidence_as_percent(monkeypatch):
+    from aeqe.compiler import LLMCompiler
+
+    llm = LLMCompiler()
+    monkeypatch.setattr(llm, "_call", lambda q, ctx="": '{"task": "count", "target": "active_fire", "start": "2026-11-12", '
+                                                       '"end": "2026-11-21", "confidence": 90}')
+    res = llm.compile("How many fire detections were there in the last 10 days?", region_id="in-punjab-sangrur", live=True)
+    assert res.ir.confidence == pytest.approx(0.9)

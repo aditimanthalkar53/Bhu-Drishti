@@ -430,6 +430,8 @@ class LLMCompiler:
         data = json.loads(m.group(0))
         assumptions = [str(a) for a in data.pop("assumptions", []) or []]
         data = {k: v for k, v in data.items() if k in QueryIR.model_fields and v is not None}
+        if isinstance(data.get("confidence"), (int, float)) and 1 < data["confidence"] < 100:
+            data["confidence"] /= 100   # small local models often write 90 for 0.9
         data.update({k: v for k, v in (overrides or {}).items() if v is not None and k in QueryIR.model_fields})
         data["region_id"] = region_id
         data["question"] = question
