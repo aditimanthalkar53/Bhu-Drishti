@@ -18,6 +18,13 @@ import { SqliteStore } from "./store/sqlite.js";
 import { setAutoEmail } from "./delivery.js";
 import type { Store } from "./store/types.js";
 import { webRoutes } from "./web.js";
+import { coordRoutes } from "./coord.js";
+import { drainRoutes } from "./drain.js";
+import { registerFeatureFlags } from "./featureFlags.js";
+import { hazardRoutes } from "./hazard/index.js";
+import { intakeRoutes } from "./intake.js";
+import { maunRoutes } from "./maun.js";
+import { profileRoutes, Roles } from "./roles.js";
 
 export async function buildApp(config: Config, opts: { store?: Store; logger?: boolean; sachet?: SachetService } = {}) {
   const app = Fastify({
@@ -35,15 +42,27 @@ export async function buildApp(config: Config, opts: { store?: Store; logger?: b
   await app.register(compress, { threshold: 1024, encodings: ["br", "gzip"], brotliOptions: { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } } });
   await app.register(cors, { origin: config.corsOrigin, credentials: true, methods: ["GET", "POST", "PATCH", "DELETE"] });
   await app.register(jwt, { secret: config.jwtSecret });
+  // FEATURE_MODE=disaster (default) answers 404 on the features hidden in this edition; "full" restores them
+  registerFeatureFlags(app, config.featureMode);
+  app.decorate("roles", new Roles(store, config.authorityEmails));
   registerAuth(app, store, { allowGuest: config.allowGuest });
   authRoutes(app, store, { allowGuest: config.allowGuest, appUrl: config.appUrl });
+  profileRoutes(app, store);
   const engine = new EngineClient(config.engineUrl);
+  // disaster coordination: requests, offers, official updates, tasks, local-language intake, Drain Watch, hazard, Maun
+  coordRoutes(app, store, engine, { appUrl: config.appUrl });
+  intakeRoutes(app);
+  drainRoutes(app, store, { uploadsDir: config.uploadsDir, appUrl: config.appUrl, authorityEmail: config.drainAuthorityEmail, wardEmails: config.drainWardEmails });
+  hazardRoutes(app, store, engine);
+  maunRoutes(app, store, engine);
+  app.get("/api/edition", async () => ({ featureMode: config.featureMode }));
   appRoutes(app, store, engine, { maxConcurrentRuns: config.maxConcurrentRuns });
   detectionRoutes(app, store, engine, { maxConcurrentRuns: config.maxConcurrentRuns });
   twinRoutes(app, store, engine);
   sachetRoutes(app, store, opts.sachet);
   const scheduler = new MonitorScheduler(store, engine, app.log, { publicUrl: config.publicUrl, secret: config.jwtSecret, appUrl: config.appUrl });
-  featureRoutes(app, store, engine, scheduler, { publicUrl: config.publicUrl, appUrl: config.appUrl, secret: config.jwtSecret, allowPrivateWebhooks: config.allowPrivateWebhooks });
+  featureRoutes(app, store, engine, scheduler, { publicUrl: config.publicUrl, appUrl: config.appUrl, secret: config.jwtSecret, allowPrivateWebhooks: config.allowPrivateWebhooks,
+    featureMode: config.featureMode });
   setAutoEmail(config.reportAutoEmail);
   if (config.scheduler) {
     scheduler.start();
@@ -53,6 +72,6 @@ export async function buildApp(config: Config, opts: { store?: Store; logger?: b
   if (config.staticDir) await webRoutes(app, config.staticDir, config.frameAncestors);
 
   app.log.info(`store=${store.constructor.name} engine=${config.engineUrl} scheduler=${config.scheduler} ` +
-    `guest=${config.allowGuest} autoEmail=${config.reportAutoEmail.length} address(es)`);
+    `guest=${config.allowGuest} autoEmail=${config.reportAutoEmail.length} address(es) mode=${config.featureMode} authorities=${config.authorityEmails.length}`);
   return app;
 }

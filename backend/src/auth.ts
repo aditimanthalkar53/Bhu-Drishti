@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authLimiter } from "./ratelimit.js";
 import { sendMail, smtpConfigured } from "./email.js";
+import type { Language } from "./roles.js";
 import type { Store, StoredRecord, User } from "./store/types.js";
 
 const RESET_TTL_MS = 30 * 60_000;
@@ -25,8 +26,8 @@ declare module "fastify" {
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
-    payload: { sub: string; name: string };
-    user: { sub: string; name: string };
+    payload: { sub: string; name: string; role?: string };
+    user: { sub: string; name: string; role?: string };
   }
 }
 
@@ -79,7 +80,11 @@ export function registerAuth(app: FastifyInstance, store: Store, opts: { allowGu
 }
 
 export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGuest: boolean; appUrl?: string }) {
-  const issue = (u: User) => ({ token: app.jwt.sign({ sub: u.id, name: u.name }, { expiresIn: "24h" }), user: publicUser(u) });
+  // the role rides in the token for the website's navigation; the server re-checks it on every guarded request
+  const issue = async (u: User) => {
+    const role = await app.roles.roleOf(u);
+    return { token: app.jwt.sign({ sub: u.id, name: u.name, role }, { expiresIn: "24h" }), user: { ...publicUser(u), role } };
+  };
 
   // ---- forgotten password: email a single-use link valid for 30 minutes. Always answers the same way,
   // so the endpoint cannot be used to find out which emails have accounts.
@@ -125,7 +130,7 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
     await store.setPasswordHash(rec.ownerId, await bcrypt.hash(req.body.password, 10));
     await revokeTokens(store, rec.ownerId);
     const u = await store.userById(rec.ownerId);
-    return issue(u!);
+    return await issue(u!);
   });
 
   app.post("/api/auth/logout-everywhere", { preHandler: app.authenticate }, async (req) => {
@@ -133,11 +138,14 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
     return { ok: true };
   });
 
-  app.post<{ Body: { email: string; password: string; name?: string } }>("/api/auth/register", {
+  app.post<{ Body: { email: string; password: string; name?: string; role?: "citizen" | "volunteer"; ward?: string; phone?: string; language?: Language } }>("/api/auth/register", {
     schema: {
       body: {
         type: "object", required: ["email", "password"],
-        properties: { email: { type: "string", minLength: 3, maxLength: 200 }, password: { type: "string", minLength: 8, maxLength: 200 }, name: { type: "string", maxLength: 100 } },
+        properties: { email: { type: "string", minLength: 3, maxLength: 200 }, password: { type: "string", minLength: 8, maxLength: 200 }, name: { type: "string", maxLength: 100 },
+          // authority is never self-assigned: the schema only accepts these two
+          role: { type: "string", enum: ["citizen", "volunteer"] }, ward: { type: "string", maxLength: 80 }, phone: { type: "string", maxLength: 30 },
+          language: { type: "string", enum: ["en", "hi", "kn", "as"] } },
       },
     },
   }, async (req, reply) => {
@@ -151,7 +159,10 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
       passwordHash: await bcrypt.hash(req.body.password, 10), createdAt: new Date().toISOString(),
     });
     await ensureDefaultProject(store, u.id);
-    return reply.code(201).send(issue(u));
+    const p = await app.roles.profile(u);
+    await store.putRecord("profile", { ...p, role: req.body.role ?? "citizen", ward: req.body.ward?.trim() || null,
+      phone: req.body.phone?.trim() || null, language: req.body.language ?? "en" });
+    return reply.code(201).send(await issue(u));
   });
 
   app.post<{ Body: { email: string; password: string } }>("/api/auth/login", {
@@ -163,7 +174,7 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
     if (!u || !u.passwordHash || !(await bcrypt.compare(req.body.password, u.passwordHash))) {
       return reply.code(401).send({ error: "wrong email or password" });
     }
-    return issue(u);
+    return await issue(u);
   });
 
   app.post("/api/auth/guest", async (_req, reply) => {
@@ -173,13 +184,13 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
       id, email: `guest-${id.slice(0, 8)}@guest.local`, name: "Guest", passwordHash: null, createdAt: new Date().toISOString(),
     });
     await ensureDefaultProject(store, u.id);
-    return reply.code(201).send(issue(u));
+    return reply.code(201).send(await issue(u));
   });
 
   app.get("/api/auth/me", { preHandler: app.authenticate }, async (req, reply) => {
     const u = await store.userById(req.userId!);
     if (!u) return reply.code(404).send({ error: "user not found" });
-    return publicUser(u);
+    return { ...publicUser(u), role: await app.roles.roleOf(u) };
   });
 
   app.post<{ Body: { current: string; next: string } }>("/api/auth/password", {
@@ -194,7 +205,7 @@ export function authRoutes(app: FastifyInstance, store: Store, opts: { allowGues
     }
     await store.setPasswordHash(u.id, await bcrypt.hash(req.body.next, 10));
     await revokeTokens(store, u.id);       // sign out every other device
-    return { ok: true, ...issue(u) };      // …but keep this one signed in
+    return { ok: true, ...(await issue(u)) };      // …but keep this one signed in
   });
 
   // API keys for programmatic access (shown once at creation)
