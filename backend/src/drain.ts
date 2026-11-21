@@ -87,10 +87,14 @@ export function drainRoutes(app: FastifyInstance, store: Store, opts: DrainOptio
     }
 
     // category: the citizen's choice wins; otherwise the model's suggestion; otherwise ask the citizen
+    // A local vision model can take minutes on a CPU. When the citizen has chosen the category, the report is saved at
+    // once and the AI suggestion is added in the background; only without a category does the report wait for it.
     let vision: DrainInfo["vision"] = null, visionError: string | null = null;
-    const v = await analysePhoto({ mime: photos[0].mime, base64: photos[0].data.toString("base64") });
-    if (v.ok) vision = { provider: v.provider, ...v.result };
-    else visionError = v.reason;
+    if (!b.category) {
+      const v = await analysePhoto({ mime: photos[0].mime, base64: photos[0].data.toString("base64") });
+      if (v.ok) vision = { provider: v.provider, ...v.result };
+      else visionError = v.reason;
+    }
     let category: DrainCategory, categorySource: DrainInfo["categorySource"];
     if (b.category) { category = b.category; categorySource = "citizen"; }
     else if (vision && vision.category !== "not_a_drain") { category = vision.category; categorySource = "ai"; }
@@ -132,8 +136,20 @@ export function drainRoutes(app: FastifyInstance, store: Store, opts: DrainOptio
     await audit(store, uid, uid, "request.create", `request:${id}`, { source: "drain_watch", category, severity }, profile.displayName);
     if (severity >= 3) await notifyAuthorities(store, roles, `Drain Watch: ${LABEL[category]}`, `${r.area ?? "location"} ${b.lat.toFixed(5)}, ${b.lng.toFixed(5)}`, "warning", `/app/requests?open=${id}`);
     if (r.drain!.forwarded.status === "pending") void forward(r.id);
+    if (b.category) void suggestLater(r.id, photos[0]);
     return reply.code(201).send({ request: r, merged: false });
   });
+
+  /** Attach the model's suggestion to a saved report (the citizen's category stays). Never throws. */
+  async function suggestLater(id: string, photo: { mime: ImageMime; data: Buffer }) {
+    try {
+      const v = await analysePhoto({ mime: photo.mime, base64: photo.data.toString("base64") });
+      const cur = await store.getRecord<HelpRequest>("request", id);
+      if (!cur?.drain) return;
+      await store.putRecord("request", { ...cur, summaryEn: cur.summaryEn ?? (v.ok ? v.result.description || null : null),
+        drain: { ...cur.drain, vision: v.ok ? { provider: v.provider, ...v.result } : null, visionError: v.ok ? null : v.reason } });
+    } catch { /* the suggestion is optional */ }
+  }
 
   async function forward(id: string) {
     const r = await store.getRecord<HelpRequest>("request", id);

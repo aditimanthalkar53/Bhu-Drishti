@@ -203,7 +203,8 @@ function Describe() {
       </label>
       <div className="row-actions">
         <Voice lang={lang} onText={(t) => setText((x) => (x ? `${x} ${t}` : t))} />
-        <button className="btn btn-primary" disabled={text.trim().length < 3 || !!busy} onClick={() => void makeDraft()}>{busy === "draft" ? "Reading…" : "Check before sending"}</button>
+        <button className="btn btn-primary" disabled={text.trim().length < 3 || !!busy} onClick={() => void makeDraft()}>{busy === "draft" ? "Reading… (up to a minute)" : "Check before sending"}</button>
+        <button className="btn" disabled={text.trim().length < 3 || busy === "send"} onClick={() => { setDraft(null); setManual("you chose to send it as written"); }}>Send as it is</button>
       </div>
       <FixLine fix={loc.fix} state={loc.state} onLocate={() => void loc.locate()} />
 

@@ -91,7 +91,7 @@ export function DrainWatchPage() {
         </div>
         <p className="muted small">Photos are shrunk on your phone and their hidden data (including the camera's GPS and device details) is removed before upload.</p>
         <FixLine fix={loc.fix} state={loc.state} onLocate={() => void loc.locate()} />
-        {busy === "ai" && <p className="muted small">Looking at the photo…</p>}
+        {busy === "ai" && <p className="muted small">Looking at the photo… You don't have to wait: choose what it is and send.</p>}
         {vision?.ok && <p className="small">AI suggestion: <strong>{vision.result.category === "not_a_drain" ? "this may not be a drain" : CATEGORIES[vision.result.category]}</strong> ({Math.round(vision.result.confidence * 100)}% sure). {vision.result.description} You can change it.</p>}
         {vision && !vision.ok && <p className="muted small">No automatic suggestion available: please choose the category.</p>}
         <div className="form-grid">
@@ -104,7 +104,7 @@ export function DrainWatchPage() {
             <input value={description} maxLength={1000} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. water entering houses since morning" /></label>
         </div>
         {err && <p className="notice notice-error" role="alert">{err}</p>}
-        <button className="btn btn-primary" disabled={!photos.length || !category || !!busy} onClick={() => void send()}>{busy === "send" ? "Sending…" : "Send report"}</button>
+        <div className="row-actions"><button className="btn btn-primary" disabled={!photos.length || !category || busy === "send"} onClick={() => void send()}>{busy === "send" ? "Sending…" : "Send report"}</button></div>
       </section>
     </Page>
   );
