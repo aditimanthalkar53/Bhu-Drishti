@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
-import { NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, post } from "./api";
-import { useAuth } from "./auth";
+import { useAuth, type Role } from "./auth";
+import { DISASTER, PRODUCT } from "./featureFlags";
 import { AuthModal } from "./components/AuthModal";
 import { ago } from "./format";
 import type { Notification, Region } from "./types";
@@ -31,6 +32,19 @@ const UsagePage = lazy(() => import("./pages/UsagePage").then((m) => ({ default:
 const AuditPage = lazy(() => import("./pages/AuditPage").then((m) => ({ default: m.AuditPage })));
 const DetectionsPage = lazy(() => import("./pages/DetectionsPage").then((m) => ({ default: m.DetectionsPage })));
 const TwinsPage = lazy(() => import("./pages/TwinsPage").then((m) => ({ default: m.TwinsPage })));
+// disaster coordination (Maun)
+const HelpPage = lazy(() => import("./pages/disaster/HelpPage").then((m) => ({ default: m.HelpPage })));
+const MyRequestsPage = lazy(() => import("./pages/disaster/HelpPage").then((m) => ({ default: m.MyRequestsPage })));
+const DrainWatchPage = lazy(() => import("./pages/disaster/DrainWatchPage").then((m) => ({ default: m.DrainWatchPage })));
+const OffersPage = lazy(() => import("./pages/disaster/OffersPage").then((m) => ({ default: m.OffersPage })));
+const UpdatesPage = lazy(() => import("./pages/disaster/UpdatesPage").then((m) => ({ default: m.UpdatesPage })));
+const TasksPage = lazy(() => import("./pages/disaster/TasksPage").then((m) => ({ default: m.TasksPage })));
+const RequestsPage = lazy(() => import("./pages/disaster/RequestsPage").then((m) => ({ default: m.RequestsPage })));
+const VolunteersPage = lazy(() => import("./pages/disaster/RequestsPage").then((m) => ({ default: m.VolunteersPage })));
+const HazardMapPage = lazy(() => import("./pages/disaster/HazardMapPage").then((m) => ({ default: m.HazardMapPage })));
+const CommandPage = lazy(() => import("./pages/disaster/CommandPage").then((m) => ({ default: m.CommandPage })));
+const EstimatesPage = lazy(() => import("./pages/disaster/EstimatesPage").then((m) => ({ default: m.EstimatesPage })));
+const SilentZonesPage = lazy(() => import("./pages/disaster/EstimatesPage").then((m) => ({ default: m.SilentZonesPage })));
 const pageLoading = <p className="muted page">Loading…</p>;
 
 const ico = (d: string): ReactNode => (
@@ -50,15 +64,70 @@ const NAV: { to: string; label: string; end?: boolean; icon: ReactNode; group: s
   { to: "/app/history", label: "History", icon: ico("M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5m4-1v5l3 2"), group: "Data" },
   { to: "/app/data", label: "Data sources", icon: ico("M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Zm0 0v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"), group: "Data" },
 ];
+type NavItem = (typeof NAV)[number] & { roles?: Role[] };
+const I = {
+  sos: ico("M12 3 2 20h20L12 3Zm0 6v5m0 3v.5"), list: ico("M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"),
+  gift: ico("M20 12v9H4v-9M2 7h20v5H2V7Zm10 0v14M12 7S10 2 7 3.5 9 7 12 7Zm0 0s2-5 5-3.5S15 7 12 7Z"), bell: ico("M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"),
+  map: ico("M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 0v14m6-12v14"), drop: ico("M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"),
+  check: ico("M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"), cmd: NAV[0].icon,
+  people: NAV.find((n) => n.to === "/app/recipients")!.icon, quiet: ico("M11 5 6 9H2v6h4l5 4V5Zm12 4-6 6m0-6 6 6"),
+  chart: ico("M3 3v18h18M7 15l4-4 3 3 5-6"), shield: NAV.find((n) => n.to === "/app/sachet")!.icon,
+  report: NAV.find((n) => n.to === "/app/reports")!.icon, audit: ico("M9 12h6m-6 4h6M7 3h10a2 2 0 0 1 2 2v16l-3-2-2 2-2-2-2 2-2-2-3 2V5a2 2 0 0 1 2-2Z"),
+  data: NAV.find((n) => n.to === "/app/data")!.icon,
+};
+const CIT: Role[] = ["citizen"], VOL: Role[] = ["volunteer"], AUTH: Role[] = ["authority"], PEOPLE: Role[] = ["citizen", "volunteer"];
+/** Disaster edition: one list, each item for the roles that see it (the server enforces the same rules). */
+const DNAV: NavItem[] = [
+  { to: "/app/dashboard", label: "Command view", icon: I.cmd, group: "Coordinate", roles: AUTH },
+  { to: "/app/requests", label: "Requests", icon: I.list, group: "Coordinate", roles: AUTH },
+  { to: "/app/offers", label: "Offers", icon: I.gift, group: "Coordinate", roles: AUTH },
+  { to: "/app/tasks", label: "Tasks", icon: I.check, group: "Coordinate", roles: [...AUTH, ...VOL] },
+  { to: "/app/volunteers", label: "Volunteers", icon: I.people, group: "Coordinate", roles: AUTH },
+  { to: "/app/help", label: "Ask for help", icon: I.sos, group: "Help", roles: PEOPLE },
+  { to: "/app/my-requests", label: "My requests", icon: I.list, group: "Help", roles: CIT },
+  { to: "/app/offers", label: "Offer help", icon: I.gift, group: "Help", roles: PEOPLE },
+  { to: "/app/drain", label: "Drain Watch", icon: I.drop, group: "Help", roles: CIT },
+  { to: "/app/silent-zones", label: "Silent zones", icon: I.quiet, group: "Maun", roles: AUTH },
+  { to: "/app/estimates", label: "Estimates", icon: I.chart, group: "Maun", roles: AUTH },
+  { to: "/app/updates", label: "Updates", icon: I.bell, group: "Information" },
+  { to: "/app/sachet", label: "SACHET alerts", icon: I.shield, group: "Information" },
+  { to: "/app/hazard", label: "Hazard map", icon: I.map, group: "Information" },
+  { to: "/app/reports", label: "Reports", icon: I.report, group: "Records", roles: AUTH },
+  { to: "/app/recipients", label: "Recipients", icon: I.people, group: "Records", roles: AUTH },
+  { to: "/app/audit", label: "Audit log", icon: I.audit, group: "Records", roles: AUTH },
+  { to: "/app/data", label: "Data sources", icon: I.data, group: "Records", roles: AUTH },
+];
+const navFor = (role: Role | undefined): NavItem[] =>
+  DISASTER ? DNAV.filter((n) => !n.roles || n.roles.includes(role ?? "citizen")) : NAV;
+
+/** Each role's home page in the disaster edition. */
+function Home() {
+  const { user } = useAuth();
+  if (!DISASTER) return <DashboardPage />;
+  if (user?.role === "authority") return <CommandPage />;
+  return <Navigate to={user?.role === "volunteer" ? "/app/tasks" : "/app/help"} replace />;
+}
+/** Hidden in the disaster edition: redirect to the dashboard (nothing is deleted). */
+const hide = (el: ReactNode) => (DISASTER ? <Navigate to="/app/dashboard" replace /> : el);
+/** Disaster pages for some roles only; the API refuses the others too. */
+function ForRoles({ roles, children }: { roles: Role[]; children: ReactNode }) {
+  const { user } = useAuth();
+  return roles.includes(user?.role ?? "citizen") ? <>{children}</> : <Navigate to="/app/dashboard" replace />;
+}
+
 const TITLES: Record<string, string> = {
-  "/app/settings": "Settings & API keys", "/app/usage": "Usage", "/app/audit": "Audit log",
+  "/app/settings": DISASTER ? "Settings" : "Settings & API keys", "/app/usage": "Usage", "/app/audit": "Audit log",
 };
 function titleFor(path: string): string {
+  if (DISASTER) {
+    const d = DNAV.find((n) => n.to === path);
+    if (d) return d.label;
+  }
   const exact = NAV.find((n) => n.to === path);
   if (exact) return exact.label;
   if (TITLES[path]) return TITLES[path];
   const prefix = NAV.filter((n) => !n.end && path.startsWith(n.to + "/")).sort((x, y) => y.to.length - x.to.length)[0];
-  return prefix?.label ?? "Bhu-Drishti";
+  return prefix?.label ?? PRODUCT;
 }
 
 export function AppShell() {
@@ -76,23 +145,36 @@ export function AppShell() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/app" element={layout}>
-          <Route index element={<App />} />
-          <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="detect" element={<DetectionsPage />} />
-          <Route path="twins" element={<TwinsPage />} />
-          <Route path="drift" element={<DriftPage />} />
-          <Route path="areas" element={<AreasPage />} />
-          <Route path="monitors" element={<MonitorsPage />} />
+          <Route index element={hide(<App />)} />
+          <Route path="dashboard" element={<Home />} />
+          <Route path="detect" element={hide(<DetectionsPage />)} />
+          <Route path="twins" element={hide(<TwinsPage />)} />
+          <Route path="drift" element={hide(<DriftPage />)} />
+          <Route path="areas" element={hide(<AreasPage />)} />
+          <Route path="monitors" element={hide(<MonitorsPage />)} />
           <Route path="alerts" element={<AlertsPage />} />
           <Route path="sachet" element={<SachetPage />} />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="reports/:id" element={<ReportDetailPage />} />
           <Route path="recipients" element={<RecipientsPage />} />
-          <Route path="history" element={<HistoryPage />} />
+          <Route path="history" element={hide(<HistoryPage />)} />
           <Route path="data" element={<DataCatalogPage />} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="usage" element={<UsagePage />} />
+          <Route path="usage" element={hide(<UsagePage />)} />
           <Route path="audit" element={<AuditPage />} />
+          {DISASTER && <>
+            <Route path="help" element={<HelpPage />} />
+            <Route path="my-requests" element={<MyRequestsPage />} />
+            <Route path="drain" element={<DrainWatchPage />} />
+            <Route path="offers" element={<OffersPage />} />
+            <Route path="updates" element={<UpdatesPage />} />
+            <Route path="hazard" element={<HazardMapPage />} />
+            <Route path="tasks" element={<ForRoles roles={["volunteer", "authority"]}><TasksPage /></ForRoles>} />
+            <Route path="requests" element={<ForRoles roles={["authority"]}><RequestsPage /></ForRoles>} />
+            <Route path="volunteers" element={<ForRoles roles={["authority"]}><VolunteersPage /></ForRoles>} />
+            <Route path="estimates" element={<ForRoles roles={["authority"]}><EstimatesPage /></ForRoles>} />
+            <Route path="silent-zones" element={<ForRoles roles={["authority"]}><SilentZonesPage /></ForRoles>} />
+          </>}
         </Route>
         <Route path="*" element={<main className="boot-error"><h1>Page not found</h1><a className="btn" href="/app/dashboard">Go to the dashboard</a></main>} />
       </Routes>
@@ -103,7 +185,7 @@ export function AppShell() {
 }
 
 interface HeaderProps {
-  user: { name: string; email: string; guest: boolean } | null;
+  user: { name: string; email: string; guest: boolean; role?: Role } | null;
   loading: boolean;
   onSignIn(): void;
   onLogout(): void;
@@ -120,7 +202,8 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
   }, [open]);
-  const groups = [...new Set(NAV.map((n) => n.group))];
+  const nav = navFor(user?.role);
+  const groups = [...new Set(nav.map((n) => n.group))];
   const body = useRef<HTMLDivElement>(null);
   const side = useRef<HTMLElement>(null);
   useGsap(body, pageEnter, [pathname]);
@@ -133,14 +216,14 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
       <aside ref={side} className={`sidebar ${open ? "open" : ""}`} aria-label="Primary">
         <a className="brand-link" href="/">
           <Logo size={30} />
-          <span>Bhu-Drishti<small>Satellite flood intelligence</small></span>
+          <span>{PRODUCT}<small>{DISASTER ? `Disaster coordination${user?.role ? ` · ${user.role}` : ""}` : "Satellite flood intelligence"}</small></span>
         </a>
         <nav className="side-nav" aria-label="Main">
           {groups.map((g) => (
             <div key={g} className="side-nav">
               <span className="side-label">{g}</span>
-              {NAV.filter((n) => n.group === g && !n.hideInSidebar).map((n) => (
-                <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `side-link ${isActive ? "active" : ""}`}>{n.icon}{n.label}</NavLink>
+              {nav.filter((n) => n.group === g && !n.hideInSidebar).map((n) => (
+                <NavLink key={`${n.to}-${n.label}`} to={n.to} end={n.end} className={({ isActive }) => `side-link ${isActive ? "active" : ""}`}>{n.icon}{n.label}</NavLink>
               ))}
             </div>
           ))}
@@ -157,7 +240,7 @@ function Shell({ user, loading, onSignIn, onLogout }: HeaderProps) {
           {ico("M4 6h16M4 12h16M4 18h16")}
         </button>
         <h1>{titleFor(pathname)}</h1>
-        {user && <GlobalSearch />}
+        {user && !DISASTER && <GlobalSearch />}
         <div className="topbar-right">
           <ThemeToggle />
           {user && <Bell />}
@@ -179,9 +262,10 @@ function SignInGate() {
   return (
     <main className="page signin-gate">
       <div className="card">
-        <h2>Sign in to use Bhu-Drishti</h2>
-        <p className="muted">The website is open to everyone. Asking questions, monitoring areas and sending reports need an account,
-          so your work is saved and every report can be traced to a person.</p>
+        <h2>Sign in to use {PRODUCT}</h2>
+        <p className="muted">{DISASTER
+          ? "Asking for help, offering help and following official updates need an account, so responders can reach you and every action can be traced to a person. In immediate danger, call 112."
+          : "The website is open to everyone. Asking questions, monitoring areas and sending reports need an account, so your work is saved and every report can be traced to a person."}</p>
       </div>
       <AuthModal onClose={() => undefined} dismissible={false} />
     </main>
@@ -254,9 +338,9 @@ function UserMenu({ user, onLogout }: { user: NonNullable<HeaderProps["user"]>; 
       {open && (
         <div className="menu-pop" role="menu">
           <div className="menu-head"><strong>{user.name}</strong><span className="muted small">{user.email}</span></div>
-          <NavLink role="menuitem" className="menu-item" to="/app/settings" onClick={() => setOpen(false)}>Settings & API keys</NavLink>
-          <NavLink role="menuitem" className="menu-item" to="/app/usage" onClick={() => setOpen(false)}>Usage</NavLink>
-          <NavLink role="menuitem" className="menu-item" to="/app/audit" onClick={() => setOpen(false)}>Audit log</NavLink>
+          <NavLink role="menuitem" className="menu-item" to="/app/settings" onClick={() => setOpen(false)}>{DISASTER ? "Settings" : "Settings & API keys"}</NavLink>
+          {!DISASTER && <NavLink role="menuitem" className="menu-item" to="/app/usage" onClick={() => setOpen(false)}>Usage</NavLink>}
+          {(!DISASTER || user.role === "authority") && <NavLink role="menuitem" className="menu-item" to="/app/audit" onClick={() => setOpen(false)}>Audit log</NavLink>}
           <button role="menuitem" className="menu-item" onClick={onLogout}>Sign out</button>
         </div>
       )}

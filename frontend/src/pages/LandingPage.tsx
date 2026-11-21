@@ -5,6 +5,7 @@ import { Logo } from "../AppShell";
 import { AuthModal } from "../components/AuthModal";
 import { gsap, magnetic, scrollCounters, scrollReveals, useGsap } from "../motion";
 import { ThemeToggle } from "../theme";
+import { DISASTER } from "../featureFlags";
 
 const EarthScene = lazy(() => import("../components/three/EarthScene"));
 
@@ -30,7 +31,12 @@ const HOW_IT_WORKS = [
   { n: "04", title: "An interval that stays honest", body: "The interval narrows after every batch and stays valid however often you look. Rainfall, MODIS flood maps and forecasts are attached as context." },
 ];
 
+/** The disaster edition has its own landing page; the full edition keeps the original one unchanged. */
 export function LandingPage() {
+  return DISASTER ? <MaunLanding /> : <SatelliteLanding />;
+}
+
+function SatelliteLanding() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
   const [showAuth, setShowAuth] = useState(false);
@@ -199,6 +205,110 @@ export function LandingPage() {
       </footer>
 
       {showAuth && <AuthModal onClose={() => { setShowAuth(false); if (user) navigate("/app"); }} />}
+    </div>
+  );
+}
+
+const ROLES = [
+  { icon: icon("M12 3 2 20h20L12 3Zm0 6v5m0 3v.5"), title: "Citizens ask", wide: true, tag: "SOS · own language · Drain Watch",
+    body: "One SOS with two taps sends your location, with 60 seconds to cancel a mistake. Or describe what is happening in English, Hindi, Kannada or Assamese, by typing or speaking. Your own words are kept next to the summary." },
+  { icon: icon("M20 12v9H4v-9M2 7h20v5H2V7Zm10 0v14"), title: "Anyone can offer", tag: "boats · food · shelter",
+    body: "Boats, vehicles, food, water, shelter, medical help or labour, with where and until when. The team matches offers to requests by type, distance and quantity." },
+  { icon: icon("M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"), title: "Volunteers act", tag: "task board",
+    body: "Claim a task, do it, report back. Deliveries, rescues and field checks, each on a map." },
+  { icon: icon("M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z"), title: "Authorities coordinate", wide: true, tag: "two-person approval · audit log",
+    body: "One command map with requests, offers, tasks and hazard layers. Official bulletins are drafted by one officer, approved by a second, then published and emailed. Every action is in the audit log." },
+];
+
+const MAUN_STEPS = [
+  { n: "01", title: "Count who asked", body: "Requests, SOS and Drain Watch reports land on one map, sorted by severity and by how well each is corroborated." },
+  { n: "02", title: "Read the hazard from many satellites", body: "Fires (NASA FIRMS), rainfall (GPM IMERG), flood (MODIS) and river forecasts (GloFAS) on one grid, each with when it last observed." },
+  { n: "03", title: "Check a random sample on the ground", body: "Cells are grouped by predicted need and volunteers visit randomly chosen ones. An unreachable cell is never swapped for an easier one." },
+  { n: "04", title: "Estimate the need nobody reported", body: "From those checks Maun estimates the true need and the hidden need, with a 95% range that stays valid however often you look. Silent zones are flagged for action." },
+];
+
+function MaunLanding() {
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+  const [showAuth, setShowAuth] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const go = () => (user ? navigate("/app/dashboard") : setShowAuth(true));
+  useGsap(root, (el) => {
+    gsap.timeline({ delay: 0.15 })
+      .from(".lx-hero .lx-line", { yPercent: 110, duration: 1.1, stagger: 0.12, ease: "power4.out" })
+      .from(".lx-hero .lx-fade", { y: 18, autoAlpha: 0, duration: 0.8, stagger: 0.08 }, "-=0.6");
+    scrollReveals(el);
+    return magnetic(el);
+  });
+  return (
+    <div className="landing lx" ref={root}>
+      <nav className="lx-nav is-scrolled">
+        <a className="lx-brand" href="/"><Logo size={26} /><span>Maun</span></a>
+        <div className="lx-links"><a href="#roles">How it helps</a><a href="#maun">Unreported need</a><a href="#honesty">Limits</a></div>
+        <div className="lx-nav-actions">
+          <ThemeToggle />
+          {!loading && (user
+            ? <button className="btn btn-primary btn-pill" onClick={() => navigate("/app/dashboard")}>Open Maun</button>
+            : <><button className="btn btn-quiet btn-pill" onClick={() => setShowAuth(true)}>Sign in</button>
+                <button className="btn btn-primary btn-pill" onClick={() => setShowAuth(true)}>Join</button></>)}
+        </div>
+      </nav>
+      <header className="lx-hero">
+        <div className="lx-globe"><Suspense fallback={<div className="lx-globe-fallback" />}><EarthScene className="lx-globe-canvas" /></Suspense></div>
+        <div className="lx-hero-copy">
+          <p className="eyebrow lx-fade">Maun (मौन): silence · disaster coordination</p>
+          <h1 className="lx-h1">
+            <span className="lx-mask"><span className="lx-line">Citizens ask. Volunteers act.</span></span>
+            <span className="lx-mask"><span className="lx-line lx-grad">Authorities coordinate.</span></span>
+          </h1>
+          <p className="lx-lead lx-fade"><strong>We also find the people who couldn&apos;t ask.</strong> Requests, offers of help and official updates in one place,
+            and an honest estimate of the need nobody reported.</p>
+          <div className="lx-cta lx-fade">
+            <button className="btn btn-primary btn-pill btn-xl" data-magnetic onClick={go}>{user ? "Open Maun" : "Ask for or offer help"}</button>
+            <a className="btn btn-glass btn-pill btn-xl" href="#maun">How we find silent areas <span aria-hidden="true">→</span></a>
+          </div>
+          <p className="small lx-fade">In immediate danger, call <a href="tel:112">112</a>.</p>
+        </div>
+      </header>
+      <section className="lx-section" id="roles">
+        <div className="lx-head" data-reveal><p className="eyebrow">One place for everyone</p><h2 className="lx-h2">Requests, offers and<br /><span className="lx-grad">official updates.</span></h2></div>
+        <div className="lx-bento" data-stagger>
+          {ROLES.map((r) => (
+            <article key={r.title} className={`lx-tile ${r.wide ? "lx-tile-wide" : ""}`}>
+              <span className="lx-tile-icon">{r.icon}</span><h3>{r.title}</h3><p>{r.body}</p><span className="lx-tag">{r.tag}</span>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section className="lx-section" id="maun">
+        <div className="lx-head" data-reveal>
+          <p className="eyebrow">Maun</p>
+          <h2 className="lx-h2">Silence is not safety.</h2>
+          <p className="lx-sub">Every platform counts the people who asked for help. Where phones are dead or networks are down, the worst-hit places can be the quietest.
+            Maun estimates the true need, including what nobody reported, and sends volunteers and satellite observation to the quiet areas first.</p>
+        </div>
+        <ol className="lx-steps">
+          <span className="lx-rail" aria-hidden="true"><span className="lx-rail-fill" /></span>
+          {MAUN_STEPS.map((s) => <li key={s.n} className="lx-step" data-reveal><span className="lx-step-n">{s.n}</span><div><h3>{s.title}</h3><p>{s.body}</p></div></li>)}
+        </ol>
+      </section>
+      <section className="lx-section" id="honesty">
+        <div className="lx-head" data-reveal><p className="eyebrow">Honest limits</p><h2 className="lx-h2">Clear about what it knows.</h2></div>
+        <div className="lx-honesty" data-stagger>
+          <div className="lx-glass"><h3>The range covers sampling error</h3><p>The 95% range covers the error from checking a sample of places. It does not cover counting mistakes in the field or a wrong population map.</p></div>
+          <div className="lx-glass"><h3>Freshness varies by source</h3><p>No satellite watches continuously. Each hazard source shows when it last observed; forecasts are labelled as forecasts.</p></div>
+          <div className="lx-glass"><h3>Simulations are labelled</h3><p>Demo data, simulated field checks and the simulated sharper-observation adapter are marked SIMULATED everywhere they appear.</p></div>
+          <div className="lx-glass"><h3>Web only, needs a connection</h3><p>Maun runs in the browser and needs connectivity. Bulletins are coordination messages from the response team; official warnings come from NDMA SACHET.</p></div>
+        </div>
+      </section>
+      <section className="lx-final" data-reveal>
+        <h2 className="lx-h2">Need help, or<br /><span className="lx-grad">able to help?</span></h2>
+        <button className="btn btn-primary btn-pill btn-xl" data-magnetic onClick={go}>{user ? "Open Maun" : "Join Maun"}</button>
+      </section>
+      <footer className="lx-footer">
+        <p className="muted small">Maun, built on the Bhu-Drishti AEQE engine · Hazard data: NASA FIRMS, NASA GPM IMERG, MODIS NRT Global Flood Product, Open-Meteo / Copernicus GloFAS · Official alerts: NDMA SACHET</p>
+      </footer>
+      {showAuth && <AuthModal initialTab="register" onClose={() => { setShowAuth(false); if (user) navigate("/app/dashboard"); }} />}
     </div>
   );
 }

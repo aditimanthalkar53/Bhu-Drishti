@@ -648,3 +648,30 @@ details summary { cursor: pointer; color: var(--water-deep); font-weight: 600; }
 }
 /* forgot-password form inside the sign-in dialog */
 .modal-form.forgot { margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--line, rgba(127,127,127,.25)); }
+
+/* ---------- disaster coordination (Maun) ---------- */
+.sos-card { justify-items: center; text-align: center; }
+.sos-btn {
+  font: inherit; font-size: 2rem; font-weight: 800; letter-spacing: 0.08em; color: #fff; cursor: pointer;
+  width: 180px; height: 180px; border-radius: 50%; border: 6px solid var(--error-wash);
+  background: radial-gradient(circle at 35% 30%, #ff8a80, #d70015 70%); box-shadow: 0 10px 40px rgba(215, 0, 21, 0.35);
+  transition: transform 0.15s var(--ease);
+}
+.sos-btn:hover { transform: scale(1.03); }
+.sos-btn:active { transform: scale(0.97); }
+.sos-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 4px; }
+.sos-btn-confirm { width: auto; height: auto; border-radius: 999px; padding: 18px 34px; font-size: 1.25rem; letter-spacing: 0.02em; }
+.sos-confirm { justify-content: center; }
+.photo-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.photo-row figure { margin: 0; display: grid; gap: 4px; justify-items: center; }
+.photo-row img { width: 120px; height: 120px; object-fit: cover; border-radius: var(--radius-s); border: 1px solid var(--rule); }
+.photo-add { min-height: 120px; min-width: 120px; }
+.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.split > div { background: var(--field); border: 1px solid var(--rule); border-radius: var(--radius-s); padding: 10px 12px; }
+.split p { margin: 4px 0 0; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 2px solid transparent; margin-right: 5px; vertical-align: -2px; }
+.check { display: flex; gap: 6px; align-items: center; font-weight: 500; }
+@media (max-width: 640px) {
+  .sos-btn { width: 150px; height: 150px; font-size: 1.75rem; }
+}
