@@ -132,8 +132,10 @@ function Describe() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [provider, setProvider] = useState<string | null>(null);
   const [manual, setManual] = useState<string | null>(null);   // why the citizen fills in the type by hand
-  const [type, setType] = useState<RequestType>("other");
-  const [severity, setSeverity] = useState<1 | 2 | 3 | 4>(2);
+  // nothing is pre-selected: the person (or the reading of their words) chooses, so a guessed default never lowers the urgency
+  const [type, setType] = useState<RequestType | "">("");
+  const [severity, setSeverity] = useState<0 | 1 | 2 | 3 | 4>(0);
+  const [skipped, setSkipped] = useState(false);
   const [people, setPeople] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [done, setDone] = useState<HelpRequest | null>(null);
@@ -150,13 +152,13 @@ function Describe() {
     try {
       const r = await post<Intake>("/api/intake", { text, language: lang });
       if (r.ok) {
-        setDraft(r.draft); setProvider(r.provider); setManual(null);
+        setDraft(r.draft); setProvider(r.provider); setManual(null); setSkipped(false);
         setType(r.draft.type); setSeverity(r.draft.severity); setPeople(r.draft.people_affected?.toString() ?? "");
       } else {
-        setDraft(null); setManual(r.reason);
+        setDraft(null); setManual(r.reason); setSkipped(false); setType(""); setSeverity(0);
       }
     } catch (e) {
-      setManual((e as Error).message);
+      setManual((e as Error).message); setSkipped(false);
     } finally {
       setBusy(null);
     }
@@ -167,7 +169,7 @@ function Describe() {
     try {
       const f = loc.fix;
       const r = await post<HelpRequest>("/api/requests", {
-        clientId: clientId.current, source: "local_language", type, severity, peopleAffected: people ? Number(people) : null,
+        clientId: clientId.current, source: "local_language", type: type as RequestType, severity: severity as 1 | 2 | 3 | 4, peopleAffected: people ? Number(people) : null,
         description: draft?.summary_local || text, originalText: text, originalLanguage: lang, summaryEn: draft?.summary_en ?? null, needs: draft?.needs ?? [],
         area: draft?.location_hint || null, ...(f ? { lat: f.lat, lng: f.lng, accuracyM: f.accuracyM, locationAt: f.at } : {}),
         intake: draft ? { provider: provider ?? "model", confidence: draft.confidence, edited } : null,
@@ -204,7 +206,7 @@ function Describe() {
       <div className="row-actions">
         <Voice lang={lang} onText={(t) => setText((x) => (x ? `${x} ${t}` : t))} />
         <button className="btn btn-primary" disabled={text.trim().length < 3 || !!busy} onClick={() => void makeDraft()}>{busy === "draft" ? "Reading… (up to a minute)" : "Check before sending"}</button>
-        <button className="btn" disabled={text.trim().length < 3 || busy === "send"} onClick={() => { setDraft(null); setManual("you chose to send it as written"); }}>Send as it is</button>
+        <button className="btn" disabled={text.trim().length < 3 || busy === "send"} onClick={() => { setDraft(null); setSkipped(true); setManual("skipped"); setType(""); setSeverity(0); }}>Send as it is</button>
       </div>
       <FixLine fix={loc.fix} state={loc.state} onLocate={() => void loc.locate()} />
 
@@ -217,15 +219,19 @@ function Describe() {
               {lang !== "en" && <p className="muted small">English for the team: {draft.summary_en}</p>}
             </>
           ) : (
-            <p className="notice notice-warn">Automatic reading is not available ({manual}). Your words are sent exactly as written; please choose the type.</p>
+            <p className="notice notice-warn">{skipped
+              ? "Your words will be sent exactly as you wrote them. Choose the type of help and how urgent it is, then send."
+              : `The automatic reading did not work (${manual}). Your words are sent exactly as written. Choose the type of help and how urgent it is, then send.`}</p>
           )}
           <div className="form-grid">
             <label className="field"><span>Type of help</span>
               <select value={type} onChange={(e) => { setType(e.target.value as RequestType); setEdited(true); }}>
+                {!type && <option value="">Choose…</option>}
                 {Object.entries(REQUEST_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select></label>
             <label className="field"><span>How urgent</span>
               <select value={severity} onChange={(e) => { setSeverity(Number(e.target.value) as 1 | 2 | 3 | 4); setEdited(true); }}>
+                {!severity && <option value={0}>Choose…</option>}
                 {[4, 3, 2, 1].map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
               </select></label>
             <label className="field"><span>People affected</span>
@@ -233,7 +239,8 @@ function Describe() {
             {draft?.needs.length ? <p className="small span-2">Needs: {draft.needs.join(", ")}</p> : null}
           </div>
           {err && <p className="notice notice-error" role="alert">{err}</p>}
-          <button className="btn btn-primary" disabled={!!busy} onClick={() => void send()}>{busy === "send" ? "Sending…" : "Send request"}</button>
+          <div className="row-actions"><button className="btn btn-primary" disabled={!!busy || !type || !severity} onClick={() => void send()}>{busy === "send" ? "Sending…" : "Send request"}</button>
+            {(!type || !severity) && <span className="muted small">Choose the type and how urgent it is to send.</span>}</div>
         </div>
       )}
     </section>
