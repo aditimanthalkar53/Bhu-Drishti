@@ -48,7 +48,7 @@ from typing import Optional
 
 import numpy as np
 
-from ..ir import CENSUS_TARGETS, QueryIR, Target, Task
+from ..ir import CENSUS_TARGETS, QueryIR, Target, Task, utc_today
 from ..sources.base import SourceError, redact
 from ..sources.copernicus import copernicus
 from ..sources.earthdata import earthdata
@@ -491,7 +491,7 @@ class LiveProvider(Provider):
                                    query={"eo:cloud_cover": {"lt": 50}}, limit=400)
         elif which == "s2_post":
             items = self.pc.search("sentinel-2-l2a", bbox, max(ir.start, ir.end - timedelta(days=10)),
-                                   min(ir.end + timedelta(days=5), date.today()), query={"eo:cloud_cover": {"lt": 50}}, limit=400)
+                                   min(ir.end + timedelta(days=5), utc_today()), query={"eo:cloud_cover": {"lt": 50}}, limit=400)
         else:
             raise KeyError(which)
         with self._lock:
@@ -613,7 +613,7 @@ class LiveProvider(Provider):
                                                         "cropland or new construction"))
         if not sup:
             return checks
-        today = date.today()
+        today = utc_today()
         checks.append(Check("Window not in the future", ir.start <= today, f"{ir.start} … {ir.end} (today {today})"))
         try:
             if ir.target == Target.FLOODED_CROPLAND:
@@ -786,7 +786,7 @@ class LiveProvider(Provider):
         from ..sources.registry import source_cache
         from ..sources.ttlcache import TTLCache
 
-        year = min(ir.end.year - 1 if ir.target == Target.FLOODED_CROPLAND else ir.end.year, date.today().year - 1)
+        year = min(ir.end.year - 1 if ir.target == Target.FLOODED_CROPLAND else ir.end.year, utc_today().year - 1)
         ck = TTLCache.key("alphaearth", ir.region_id, year, boxes.shape, float(boxes[:, 2].max() - boxes[:, 0].min()))
         cached = source_cache().get(ck)
         try:
@@ -816,7 +816,7 @@ class LiveProvider(Provider):
             return f"S2L2A:{ids('s2_base')}|{ids('s2_target')}"
         if ir.target == Target.BURNED_CROPLAND:
             return f"S2L2A:pre:{ids('s2_pre')}|post:{ids('s2_post')}"
-        return f"FIRMS:{ir.start}..{ir.end}:{date.today()}"
+        return f"FIRMS:{ir.start}..{ir.end}:{utc_today()}"
 
     # -- census (active fire) -----------------------------------------------------------
     def census_values(self, ir: QueryIR, u: TileUniverse):
@@ -870,7 +870,7 @@ class LiveProvider(Provider):
 
     def _ev_rainfall(self, ir, r) -> dict:
         start = ir.start - timedelta(days=7)
-        res = self.ed.imerg_rainfall(r.bbox, start, min(ir.end, date.today()))
+        res = self.ed.imerg_rainfall(r.bbox, start, min(ir.end, utc_today()))
         self.ed.mark_used_end_to_end("IMERG rainfall attached to a flood run")
         return {"title": f"Rainfall (GPM IMERG {res['run']} run, {start} … {ir.end})", "source": "earthdata",
                 "summary": (f"Area-mean total {res['total_mm']} mm over {res['days_with_data']} day(s); wettest day {res['max_day_mm']} mm."
@@ -985,7 +985,7 @@ class LiveProvider(Provider):
         r = self.region(rid)
         if r is None:
             raise KeyError(rid)
-        today = date.today()
+        today = utc_today()
         out: dict = {"region_id": rid, "checked": today.isoformat(), "items": []}
 
         def add(name, source, fn):

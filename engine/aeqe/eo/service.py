@@ -326,7 +326,7 @@ class DetectionService:
                     rows.append(seen)
         return clean_json(twin.compare(rows))
 
-    def terrain(self, geometry: dict, detection_id: Optional[str] = None) -> dict[str, Any]:
+    def terrain(self, geometry: dict, detection_id: Optional[str] = None, margin_deg: Optional[float] = None) -> dict[str, Any]:
         geom = twin.validate_geometry(geometry)
         npz = None
         if detection_id:
@@ -334,7 +334,10 @@ class DetectionService:
                 npz = self._dir(detection_id) / "displacement.npz"
             except KeyError:
                 npz = None
-        return twin.terrain(geom, self.root.parent / "twin_terrain", npz)
+        return twin.terrain(geom, self.root.parent / "twin_terrain", npz, margin_deg)
+
+    def buildings(self, geometry: dict, margin_deg: Optional[float] = None) -> dict[str, Any]:
+        return twin.find_buildings(twin.validate_geometry(geometry), self.root.parent / "twin_terrain", margin_deg)
 
     def _facilities(self, record: dict[str, Any], progress) -> Optional[dict[str, Any]]:
         if not record["detected"]:

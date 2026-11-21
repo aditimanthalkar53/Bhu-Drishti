@@ -630,10 +630,12 @@ details summary { cursor: pointer; color: var(--water-deep); font-weight: 600; }
 .twin-candidates ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .twin-candidates .active { background: var(--water-wash); }
 .twin-3d { display: grid; gap: 10px; min-width: 0; }
-.twin-stage { position: relative; height: 480px; border-radius: var(--radius-s); overflow: hidden; border: 1px solid var(--rule); background: var(--paper); }
+.twin-stage { position: relative; height: max(520px, 74vh); border-radius: var(--radius-s); overflow: hidden; border: 1px solid var(--rule); background: var(--paper); }
 .twin-canvas { position: absolute; inset: 0; }
 .twin-canvas canvas { display: block; }
-.twin-status { position: absolute; left: 12px; top: 8px; z-index: 1; }
+.twin-stage:fullscreen { height: 100%; border: 0; border-radius: 0; }
+.twin-status { position: absolute; left: 12px; top: 8px; z-index: 1; padding: 2px 8px; border-radius: 6px; background: rgba(255, 255, 255, 0.85); color: #333; }
+.twin-full { position: absolute; right: 12px; top: 10px; z-index: 1; }
 .twin-inline { min-width: 220px; }
 .twin-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .twin-timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
