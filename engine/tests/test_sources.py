@@ -98,12 +98,22 @@ def test_http_retries_transient_and_not_permanent():
     assert B.classify_status(429) == "rate_limited" and B.classify_status(401) == "auth"
 
 
-def test_ttlcache_expiry(tmp_path):
+def test_ttlcache_expiry(tmp_path, monkeypatch):
+    # a fake clock: the real one made this depend on how fast the machine is (a slow CI runner took longer than the 50 ms
+    # lifetime between put and get)
+    import types
+
+    from aeqe.sources import ttlcache as ttlcache_module
+
+    now = [1000.0]
+    monkeypatch.setattr(ttlcache_module, "time", types.SimpleNamespace(time=lambda: now[0]))
     c = TTLCache(tmp_path / "c.sqlite")
-    c.put("a", {"v": 1}, ttl_s=0.05)
+    c.put("a", {"v": 1}, ttl_s=10)
     assert c.get("a") == {"v": 1}
-    time.sleep(0.08)
-    assert c.get("a") is None
+    now[0] += 9.9
+    assert c.get("a") == {"v": 1}      # still inside its lifetime
+    now[0] += 0.2
+    assert c.get("a") is None          # expired
 
 
 def test_status_ladder_never_overclaims():

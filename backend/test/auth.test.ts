@@ -126,7 +126,7 @@ test("a run lost to an engine restart is closed as failed, not left running", as
   f.post("/queries", async (_req, reply) => reply.code(201).send({ id: "lostjob1", compile: {}, plan: { ok: true } }));
   f.get("/queries/:id", async (_req, reply) => reply.code(404).send({ detail: "no job" }));   // the engine restarted
   await f.listen({ port: 0, host: "127.0.0.1" });
-  const app = await buildApp(cfg((f.server.address() as any).port, { SQLITE_PATH: ":memory:" }), { logger: false });
+  const app = await buildApp(cfg((f.server.address() as any).port, { SQLITE_PATH: ":memory:", FEATURE_MODE: "full" }), { logger: false });
   try {
     const reg = await app.inject({ method: "POST", url: "/api/auth/register", payload: { email: "lost@example.org", password: "first-pass-123" } });
     const H = { authorization: `Bearer ${reg.json().token}` };

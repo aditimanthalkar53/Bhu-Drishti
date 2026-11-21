@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { post } from "../api";
 import { useAuth } from "../auth";
+import { DISASTER, PRODUCT } from "../featureFlags";
 
 interface Props {
   onClose(): void;
@@ -18,6 +19,10 @@ export function AuthModal({ onClose, dismissible = true, initialTab = "login" }:
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [name, setName] = useState("");
+  const [role, setRole] = useState<"citizen" | "volunteer">("citizen");
+  const [ward, setWard] = useState("");
+  const [phone, setPhone] = useState("");
+  const [language, setLanguage] = useState("en");
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<string | null>(null);
   const emailRef = useRef<HTMLInputElement>(null);
@@ -48,7 +53,7 @@ export function AuthModal({ onClose, dismissible = true, initialTab = "login" }:
     setBusy(true);
     try {
       if (tab === "login") await login(email, password);
-      else await register(email, password, name);
+      else await register(email, password, name, { role, ward: ward.trim(), phone: phone.trim(), language });
       onClose();
     } catch {
       // error is set in the auth context
@@ -63,8 +68,10 @@ export function AuthModal({ onClose, dismissible = true, initialTab = "login" }:
       <div className="modal">
         {dismissible && <button className="modal-close" onClick={onClose} aria-label="Close">&times;</button>}
         <div>
-          <h2 className="modal-title">{tab === "login" ? "Sign in to Bhu-Drishti" : "Create your account"}</h2>
-          <p className="muted small">{tab === "login" ? "Use your work email and password." : "Your areas, monitors and reports are saved to your account."}</p>
+          <h2 className="modal-title">{tab === "login" ? `Sign in to ${PRODUCT}` : "Create your account"}</h2>
+          <p className="muted small">{DISASTER
+            ? (tab === "login" ? "Use the email and password you signed up with." : "Ask for help, offer help and get official updates. Authority accounts are set up by the administrator.")
+            : (tab === "login" ? "Use your work email and password." : "Your areas, monitors, reports and requests are saved to your account. Authority access is set up by the administrator.")}</p>
         </div>
 
         <div className="modal-tabs" role="tablist">
@@ -95,6 +102,27 @@ export function AuthModal({ onClose, dismissible = true, initialTab = "login" }:
               <span>Confirm password</span>
               <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required maxLength={200} />
             </label>
+          )}
+          {tab === "register" && (
+            <>
+              <fieldset className="field fieldset">
+                <span>I am joining as</span>
+                <div className="seg" role="radiogroup" aria-label="Role">
+                  <button type="button" role="radio" aria-checked={role === "citizen"} className={role === "citizen" ? "active" : ""} onClick={() => setRole("citizen")}>Citizen</button>
+                  <button type="button" role="radio" aria-checked={role === "volunteer"} className={role === "volunteer" ? "active" : ""} onClick={() => setRole("volunteer")}>Volunteer</button>
+                </div>
+              </fieldset>
+              <div className="field-row">
+                <label className="field"><span>Ward / area <span className="muted">(optional)</span></span>
+                  <input value={ward} onChange={(e) => setWard(e.target.value)} maxLength={80} placeholder="e.g. Ward 4, Barpeta" /></label>
+                <label className="field"><span>Language</span>
+                  <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                    <option value="en">English</option><option value="hi">हिन्दी (Hindi)</option><option value="kn">ಕನ್ನಡ (Kannada)</option><option value="as">অসমীয়া (Assamese)</option>
+                  </select></label>
+              </div>
+              <label className="field"><span>Phone <span className="muted">(optional, shared with responders only)</span></span>
+                <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={30} autoComplete="tel" /></label>
+            </>
           )}
 
           {(local || error) && <p className="notice notice-error" role="alert">{local ?? error}</p>}

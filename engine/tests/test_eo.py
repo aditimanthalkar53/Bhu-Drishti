@@ -750,6 +750,36 @@ def test_overpass_moves_to_the_next_server_when_one_is_overloaded():
     assert assets.overpass_query("q", post) == {"elements": [1]} and len(calls) == 2
 
 
+def test_overpass_waits_and_retries_when_every_server_is_busy():
+    calls, slept = [], []
+    n = len(assets.OVERPASS_URLS)
+
+    class Resp:
+        def __init__(self, code, headers=None):
+            self.code, self.headers = code, headers or {}
+
+        def raise_for_status(self):
+            if self.code != 200:
+                raise httpx.HTTPStatusError("busy", request=httpx.Request("POST", "http://x"),
+                                            response=httpx.Response(self.code, headers=self.headers))
+
+        def json(self):
+            return {"elements": [7]}
+
+    def post(url, **kw):
+        calls.append(url)
+        # the whole first round is busy (one server asks for 5 s), the second round gets through
+        return Resp(429, {"retry-after": "5"}) if len(calls) <= n else Resp(200)
+
+    assert assets.overpass_query("q", post, sleep=slept.append) == {"elements": [7]}
+    assert slept == [5.0] and len(calls) == n + 1
+    # still busy after the retry: the error is raised, and the wait never exceeds the cap
+    slept.clear()
+    with pytest.raises(httpx.HTTPStatusError):
+        assets.overpass_query("q", lambda url, **kw: Resp(429, {"retry-after": "120"}), sleep=slept.append)
+    assert slept == [assets.MAX_RETRY_WAIT_S]
+
+
 def test_worldpop_json_is_found_behind_php_notices():
     text = '<br />\n<b>Deprecated</b>: Return type of Pimple\\Container::offsetExists($id) on line <b>133</b><br />\n{"error":false,"data":{"total_population":12.5}}'
     assert population.parse_worldpop(text)["data"]["total_population"] == 12.5

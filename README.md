@@ -1,4 +1,11 @@
-# Bhu-Drishti
+# Maun / Bhu-Drishti
+
+> **Bhu-Drishti now includes Maun, a disaster coordination platform.** Maun brings citizens, volunteers and authorities
+> together so that requests, offers of help and official updates are shared and coordinated in one place. Maun (मौन,
+> "silence") also estimates the need nobody reported. See [Disaster mode (Maun)](#disaster-mode-maun) below.
+> By default (`FEATURE_MODE=full`) every feature is on: the satellite product described next (AEQE questions, change
+> detection, digital twins, monitors…) and the coordination pages. `FEATURE_MODE=disaster` together with
+> `VITE_FEATURE_MODE=disaster` builds an optional slimmed coordination-only edition.
 
 **Satellite monitoring for every district in India, with the uncertainty stated.** Ask a question in plain language
 ("What percentage of cropland in Barpeta was flooded during 1–15 July 2024?", "How many fire detections were there in
@@ -46,6 +53,139 @@ up to about 10 km): its information, the inspections, damage reports, maintenanc
 finished analysis that covers it, read at the asset's location and compared with the previous one. It is shown on 3D terrain
 (Copernicus DEM with a recent Sentinel-2 image, or the movement field draped on it). This is a record and a viewer: nothing
 simulates how the structure behaves, its shape and height are not modelled, and there are no live sensors unless entered.
+
+## Disaster mode (Maun)
+
+**Citizens ask. Volunteers act. Authorities coordinate.** And Maun also finds the people who couldn't ask.
+
+### Roles
+| Role | How you get it | Sees |
+|---|---|---|
+| Citizen | chosen at sign-up (default; existing accounts become citizens) | Ask for help (SOS, own words), My requests, Offer help, Drain Watch, Updates, SACHET alerts, Hazard map |
+| Volunteer | chosen at sign-up or in Settings | Tasks, Ask for help, Offer help, Updates, Hazard map |
+| Authority | **never self-assigned**: listed in `AUTHORITY_EMAILS`, or granted by an allow-listed authority on the People page | Command view, Requests, Offers, Tasks, Volunteers, Silent zones, Estimates, Updates/bulletins, Reports, Recipients, Audit log, Data sources |
+
+The role lives in a `profile` record (no change to the users table), travels in the JWT for the website, and is re-read
+on every role-guarded request, so removing an authority takes effect immediately.
+
+### What each part does
+- **SOS:** tap → "Are you sure?" → second tap sends at once with the device location (high accuracy, accuracy radius,
+  timestamp). For 60 seconds the sender can cancel ("sent by mistake"), and authorities see it flagged as possibly accidental.
+  Each SOS carries a client-generated id, so network retries never duplicate it. A user may send 3 new SOS per 10 minutes,
+  repeats are flagged, authorities are notified instantly, and if location fails it is sent anyway with the profile's area.
+- **Own words:** type or speak (Web Speech API where the browser has it) in English, Hindi, Kannada or Assamese. A model
+  (`INTAKE_*`) makes a structured draft the citizen confirms or edits; authorities see the English summary next to the
+  original text. With no model, or on failure, the original text is sent and the citizen picks the type.
+- **Drain Watch:** up to 3 camera photos, shrunk and re-encoded on the phone. The server checks the real file type,
+  limits size to 8 MB and strips EXIF/XMP/IPTC/comments. Photos are stored under `<data>/uploads/drain/<id>/` and served
+  only to the reporter and authorities. A vision model (`VISION_*`) suggests a category, and the citizen's choice wins. Each
+  report gets a one-page PDF that is emailed to the ward office (`DRAIN_WARD_EMAILS`, else `DRAIN_AUTHORITY_EMAIL`).
+  A report within 30 m of an open one of the same category from the last 7 days becomes a "+1 confirmation".
+- **Requests:**
+  - Statuses: new → verified → assigned → in progress → resolved (or cancelled).
+  - Sorting: by severity × confidence. Confidence comes from three pieces of evidence: nearby reports from other people,
+    the hazard layer and the reporter's history. How much each counts is **learned** by logistic regression from what
+    authorities decided (verified or acted on vs cancelled), once there are 30 such decisions; before that it is a plain
+    average with no weights. Low confidence never hides a request.
+- **Offers and matches:** offers (boat, vehicle, food, water, shelter, medical, labour) are ordered for a request by
+  what matters first, with no weighted score: a resource that serves that kind of request, then the nearest, then the
+  one covering the most people. A match creates a delivery task.
+- **Official updates:** one authority drafts, a **second** approves (the author cannot), then the update is published to
+  the Updates feed and emailed to the chosen recipient groups. Every delivery and step is in the audit log. Bulletins are
+  coordination messages; official warnings are shown from NDMA SACHET.
+- **Hazard map (virtual constellation):** we no longer analyse imagery for this edition. `engine/aeqe/hazard/` reads the
+  following independent products, each through the existing source clients (retries, key redaction, status ladder):
+  - NASA FIRMS fires;
+  - GPM IMERG rainfall (area-level);
+  - the MODIS NRT flood product (area-level);
+  - GloFAS river discharge and the Open-Meteo rain forecast, both labelled as forecasts.
+
+  Each source shows when it last observed, its delay after observation, or "not configured". Nothing claims continuous
+  coverage. `hazard_score` per cell is the largest of the available layers, all weighted equally, each on a published
+  or scale-free 0–1 scale: MODIS flooded share; FIRMS fire present; wettest day ÷ 115.6 mm (IMD "very heavy rainfall");
+  GloFAS share of the forecast peak above normal flow (see `score.py`). It is used for the map, strata and request
+  ranking only; Maun learns each layer's real effect from field checks.
+- **Sharper observation:** an `ObservationRequest` asks for sharper imagery over chosen cells. We cannot task real
+  satellites, so the only adapter is **SIMULATED** (`SimulatedObservationAdapter` in `backend/src/hazard/index.ts`) and
+  says so everywhere. A real provider implements the same `ObservationAdapter` interface.
+- **Maun estimates** (`engine/aeqe/maun/`; AEQE's estimators are called, not changed):
+  - **Area:** a district (cells are kept inside its boundary) or a map view, split into grid cells.
+  - **Data per cell:** people from the **HRSL 30 m population map** (zonal sums; a cell that cannot be read is flagged
+    and uses a flat fallback), each hazard layer separately, and the reports already received.
+  - **Nothing about need is assumed:** the cross-fitted model learns from the field checks how need relates to each
+    hazard layer, people and reports.
+  - **Strata:** the existing six strata over a design score with no weights (the average percentile rank of
+    households exposed to the hazard and of reports). The design only decides which cells are checked; it cannot bias
+    the estimate.
+  - **Selection:** volunteers check randomly chosen cells, allocated by sequential Neyman allocation with a pilot of 3
+    per stratum.
+  - **Estimate:** the cross-fitted difference estimator (stratified below 30 checks), with alpha spending over looks. The
+    output is reported need, estimated true need, the 95% range and the hidden need (true minus reported), overall and
+    per area.
+  - **Unreachable cells** are never swapped for easier ones. They stay in the sample, the range is widened to cover
+    both no need and every household in need there, and they are flagged and sent for sharper observation.
+  - **Reporting rate** is learned: reports ÷ measured need over the checked cells, with a 95% interval, overall and per
+    stratum.
+  - **Silent zones** come from data, not thresholds:
+    - checked cells where the field check found more need than was reported;
+    - other cells where need is significantly above reports: a one-sided test per cell using the learned model and its
+      residual spread (or, before 30 checks, the measured gap in similar checked cells), with false discoveries held at
+      10% (Benjamini-Hochberg);
+    - cells where reports stopped: a Poisson test of no reports in the last 24 h given the 48 h before.
+    Before any check, nothing is flagged on hazard alone.
+  - **Storage:** the run (cells, seed, each wave's allocation, results) is stored in the backend and the engine replays
+    it deterministically, so restarts lose nothing.
+  - **Live updates:** the estimate updates live over Server-Sent Events.
+
+### Run the simulation (SIMULATED ground truth)
+```
+cd engine
+python -m maun_sim --runs 500        # prints one run wave by wave, then the empirical coverage; saves ../data/maun_sim/coverage.{json,png}
+```
+The world is a generated Barpeta-like area: a river, flood extent, towns, and villages with poor networks where far fewer
+people report. The true need is hidden from the engine. Over 500 runs (4 waves, about 88 checks out of 400 cells), the
+95% range contained the true total in **99.8%** of runs. Reports covered only about a third of the true need. The range
+is conservative: alpha spending over the looks and the larger of two standard errors make it err wide, never narrow. The range covers
+sampling error only, not counting mistakes or a wrong population map.
+
+### Demo data
+```
+cd backend && npm run seed:demo      # engine running for the Maun part; password for all demo accounts: maun-demo-2026
+```
+The seed creates:
+- 2 authorities (a bulletin needs two), 2 volunteers and 3 citizens;
+- requests, including an SOS and Assamese and Hindi originals;
+- offers, and Drain Watch reports including a +1 merge;
+- an approved bulletin;
+- a SIMULATED Maun run with one wave of simulated checks done (one cell unreachable).
+
+All of it is labelled demo / SIMULATED.
+
+### Environment
+`FEATURE_MODE` (backend) / `VITE_FEATURE_MODE` (website, build time) = `full` (default, everything) or `disaster`; `AUTHORITY_EMAILS`;
+`INTAKE_PROVIDER/MODEL/API_KEY/BASE_URL`; `VISION_PROVIDER/MODEL/API_KEY/BASE_URL`; `DRAIN_AUTHORITY_EMAIL`,
+`DRAIN_WARD_EMAILS`; `UPLOADS_DIR`; `OBS_SIM_DELAY_S`. Model keys stay on the server.
+
+**Hidden only in the optional disaster edition** (code kept; API answers 404, pages redirect to the dashboard):
+- the Drift Simulator, Explore (the satellite question compiler) and its new questions about flooded or burned cropland,
+  new construction and kilns;
+- change detection, digital twins, Areas, Monitors and History;
+- Usage, API keys and webhooks;
+- the replay/compare/trace/CSV buttons (their endpoints stay);
+- the landing page's benchmark and 735-district sections.
+
+In the default `full` edition all of these stay visible, next to the coordination pages; the authority Command view is at `/app/command`.
+
+### Limitations
+- Web only, and it needs connectivity.
+- Hazard freshness varies by source, and forecasts are not observations.
+- The sharper-observation adapter is simulated.
+- The Maun range covers sampling error only. Population comes from the HRSL map (2018–2020 inputs), which is not
+  validated against a census here.
+- Browser speech recognition depends on the browser and language.
+
+**Future work (not built):** offline/PWA, SMS gateway, phone-to-phone relay, real satellite tasking, face/plate blurring,
+chat, donations.
 
 ## Pages
 

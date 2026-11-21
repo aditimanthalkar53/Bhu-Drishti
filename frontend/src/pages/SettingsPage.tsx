@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { del, post, setToken } from "../api";
+import { del, patch, post, setToken } from "../api";
+import { DISASTER } from "../featureFlags";
 import { useAuth } from "../auth";
 import { ago, fmtDate } from "../format";
 import type { Webhook } from "../types";
@@ -10,9 +11,13 @@ interface Integrations { report_delivery: string; smtp_configured: boolean; publ
 
 export function SettingsPage() {
   const { user } = useAuth();
-  const keys = useData<ApiKey[]>("/api/keys");
-  const hooks = useData<Webhook[]>("/api/webhooks");
-  const integ = useData<Integrations>("/api/settings/integrations");
+  // citizens and volunteers see only their profile; authorities also manage email delivery, API keys and webhooks
+  // (the last two are not part of the disaster edition, where the API answers 404)
+  const authority = user?.role === "authority";
+  const tools = authority && !DISASTER;
+  const keys = useData<ApiKey[]>(tools ? "/api/keys" : null);
+  const hooks = useData<Webhook[]>(tools ? "/api/webhooks" : null);
+  const integ = useData<Integrations>(tools ? "/api/settings/integrations" : null);
   const act = useAction();
   const [label, setLabel] = useState("n8n");
   const [newKey, setNewKey] = useState<string | null>(null);
@@ -22,21 +27,22 @@ export function SettingsPage() {
   const [testTo, setTestTo] = useState(user?.email ?? "");
 
   return (
-    <Page title="Settings" lead="Profile, API keys for scripts and n8n, outgoing webhooks and email delivery.">
+    <Page title="Settings" lead={tools ? "Profile, API keys for scripts and n8n, outgoing webhooks and email delivery." : authority ? "Your profile, password and email." : "Your profile and password."}>
       <ErrorNote error={act.error ?? keys.error ?? hooks.error} />
       {act.message && <p className="notice notice-ok">{act.message}</p>}
       <section className="card">
         <h2>Profile</h2>
-        <p>{user?.name} · {user?.email}</p>
+        <p>{user?.name} · {user?.email}{user?.role ? ` · ${user.role}` : ""}</p>
+        <ProfileEditor />
         <ChangePassword />
       </section>
 
-      <section className="card">
+      {authority && <section className="card">
         <h2>Email delivery</h2>
-        <p className="small">Mode: <strong>{integ.data?.report_delivery === "n8n" ? "n8n (reports are handed to your n8n workflow via the report.approved webhook)" : "direct SMTP"}</strong>
+        {tools && <><p className="small">Mode: <strong>{integ.data?.report_delivery === "n8n" ? "n8n (reports are handed to your n8n workflow via the report.approved webhook)" : "direct SMTP"}</strong>
           {" · "}SMTP {integ.data?.smtp_configured ? <Pill tone="ok">configured</Pill> : <Pill tone="warn">not configured</Pill>}</p>
         <p className="small">Automatic copy of every generated report (summary + technical PDF):{" "}
-          {integ.data?.auto_email?.length ? <strong>{integ.data.auto_email.join(", ")}</strong> : <span className="muted">off — set REPORT_AUTO_EMAIL in .env</span>}</p>
+          {integ.data?.auto_email?.length ? <strong>{integ.data.auto_email.join(", ")}</strong> : <span className="muted">off — set REPORT_AUTO_EMAIL in .env</span>}</p></>}
         <div className="row-actions">
           <input className="input" type="email" placeholder="you@example.org" value={testTo} onChange={(e) => setTestTo(e.target.value)} aria-label="Test email address" />
           <button className="btn btn-small" disabled={act.busy === "mail"} onClick={() => void act.run("mail", async () => {
@@ -44,8 +50,9 @@ export function SettingsPage() {
             return `Test email sent to ${r.to}.`;
           })}>Send test email</button>
         </div>
-      </section>
+      </section>}
 
+      {tools && <>
       <section className="card">
         <h2>API keys</h2>
         <p className="muted small">For scripts and automation (n8n). Send as the <code>x-api-key</code> header. Keys are shown once.</p>
@@ -123,10 +130,44 @@ export function SettingsPage() {
           </ol>
         </details>
       </section>
+      </>}
     </Page>
   );
 }
 
+
+interface Profile { displayName: string; phone: string | null; ward: string | null; language: string; skills: string[]; resources: string[] }
+
+/** Disaster edition: the details responders see (role changes for authorities go through an administrator). */
+function ProfileEditor() {
+  const p = useData<Profile>("/api/profile");
+  const act = useAction();
+  const [f, setF] = useState<Profile | null>(null);
+  const v = f ?? p.data;
+  if (!v) return null;
+  const set = (k: keyof Profile, val: unknown) => setF({ ...v, [k]: val } as Profile);
+  return (
+    <div className="stack">
+      <div className="form-grid">
+        <label className="field"><span>Display name</span><input value={v.displayName} maxLength={100} onChange={(e) => set("displayName", e.target.value)} /></label>
+        <label className="field"><span>Phone</span><input value={v.phone ?? ""} maxLength={30} onChange={(e) => set("phone", e.target.value)} /></label>
+        <label className="field"><span>Ward / area</span><input value={v.ward ?? ""} maxLength={80} onChange={(e) => set("ward", e.target.value)} /></label>
+        <label className="field"><span>Language</span>
+          <select value={v.language} onChange={(e) => set("language", e.target.value)}>
+            <option value="en">English</option><option value="hi">हिन्दी</option><option value="kn">ಕನ್ನಡ</option><option value="as">অসমীয়া</option>
+          </select></label>
+        <label className="field"><span>Skills (comma separated)</span><input value={v.skills.join(", ")} onChange={(e) => set("skills", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))} placeholder="first aid, swimming, driving" /></label>
+        <label className="field"><span>Resources (comma separated)</span><input value={v.resources.join(", ")} onChange={(e) => set("resources", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))} placeholder="boat, tractor, generator" /></label>
+      </div>
+      <ErrorNote error={act.error} />
+      {act.message && <p className="notice notice-ok">{act.message}</p>}
+      <button className="btn btn-small" disabled={!f || !!act.busy} onClick={() => void act.run("p", async () => {
+        await patch("/api/profile", { displayName: v.displayName, phone: v.phone || null, ward: v.ward || null, language: v.language, skills: v.skills, resources: v.resources });
+        setF(null); await p.reload(); return "Profile saved.";
+      })}>Save profile</button>
+    </div>
+  );
+}
 
 function ChangePassword() {
   const [current, setCurrent] = useState("");

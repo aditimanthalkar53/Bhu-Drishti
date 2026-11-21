@@ -1,3 +1,7 @@
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { featureMode, type FeatureMode } from "./featureFlags.js";
+
 export interface Config {
   port: number;
   host: string;
@@ -24,6 +28,37 @@ export interface Config {
   frameAncestors: string[];
   /** Public address of the website, used in password-reset links. */
   appUrl: string;
+  /** "full" (default): every feature, satellite and coordination; "disaster": the slimmed coordination edition. */
+  featureMode: FeatureMode;
+  /** Accounts that are authorities. Authority is never self-assigned. */
+  authorityEmails: string[];
+  /** Drain Watch photos live here, served only to signed-in users. */
+  uploadsDir: string;
+  /** Default ward authority for Drain Watch reports, and optional "ward:email" overrides. */
+  drainAuthorityEmail: string | null;
+  drainWardEmails: Record<string, string>;
+}
+
+const isEmail = (s: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s);
+const emailList = (v: string | undefined) => (v ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(isEmail);
+
+function uploadsDir(env: NodeJS.ProcessEnv, sqlitePath: string): string {
+  if (env.UPLOADS_DIR) return env.UPLOADS_DIR;
+  if (env.DATA_DIR) return join(env.DATA_DIR, "uploads");
+  if (sqlitePath === ":memory:" || sqlitePath === "memory") return join(tmpdir(), "maun-uploads");
+  return join(dirname(sqlitePath), "uploads");
+}
+
+/** "ward 4:a@x.org, Ward 7:b@y.org" → { "ward 4": "a@x.org", "ward 7": "b@y.org" } (keys lower-cased). */
+export function parseWardEmails(v: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (v ?? "").split(",")) {
+    const i = part.lastIndexOf(":");
+    if (i <= 0) continue;
+    const ward = part.slice(0, i).trim().toLowerCase(), email = part.slice(i + 1).trim().toLowerCase();
+    if (ward && isEmail(email)) out[ward] = email;
+  }
+  return out;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -52,6 +87,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     staticDir: env.STATIC_DIR || null,
     frameAncestors: (env.FRAME_ANCESTORS ?? "").split(/[\s,]+/).filter(Boolean),
     appUrl: (env.PUBLIC_APP_URL ?? "http://localhost:8081").replace(/\/$/, ""),
+    featureMode: featureMode(env),
+    authorityEmails: emailList(env.AUTHORITY_EMAILS),
+    uploadsDir: uploadsDir(env, env.SQLITE_PATH || "./data/bhu-drishti.sqlite"),
+    drainAuthorityEmail: emailList(env.DRAIN_AUTHORITY_EMAIL)[0] ?? null,
+    drainWardEmails: parseWardEmails(env.DRAIN_WARD_EMAILS),
   };
 }
 

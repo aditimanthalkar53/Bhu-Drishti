@@ -9,19 +9,26 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, post, setToken } from "./api";
 
+export type Role = "citizen" | "volunteer" | "authority";
+
 export interface AuthUser {
   id: string;
   email: string;
   name: string;
   guest: boolean;
+  /** set by the server; authority is never chosen by the user */
+  role?: Role;
 }
+
+export interface SignupExtra { role?: "citizen" | "volunteer"; ward?: string; phone?: string; language?: string; skills?: string[]; resources?: string[] }
 
 interface AuthCtx {
   user: AuthUser | null;
   loading: boolean;
   error: string | null;
-  login(email: string, password: string): Promise<void>;
-  register(email: string, password: string, name: string): Promise<void>;
+  /** with a role, the account must have that role (each role signs in on its own page) */
+  login(email: string, password: string, role?: Role): Promise<void>;
+  register(email: string, password: string, name: string, extra?: SignupExtra): Promise<void>;
   logout(): void;
   clearError(): void;
 }
@@ -53,20 +60,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(r.user);
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string, role?: Role) => {
     setError(null);
     try {
-      handle(await post<{ token: string; user: AuthUser }>("/api/auth/login", { email: email.trim(), password }));
+      handle(await post<{ token: string; user: AuthUser }>("/api/auth/login", { email: email.trim(), password, ...(role ? { role } : {}) }));
     } catch (e) {
       setError((e as Error).message);
       throw e;
     }
   }, [handle]);
 
-  const register = useCallback(async (email: string, password: string, name: string) => {
+  const register = useCallback(async (email: string, password: string, name: string, extra: SignupExtra = {}) => {
     setError(null);
     try {
-      handle(await post<{ token: string; user: AuthUser }>("/api/auth/register", { email: email.trim(), password, name: name.trim() }));
+      const clean = Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0)));
+      handle(await post<{ token: string; user: AuthUser }>("/api/auth/register", { email: email.trim(), password, name: name.trim(), ...clean }));
     } catch (e) {
       setError((e as Error).message);
       throw e;

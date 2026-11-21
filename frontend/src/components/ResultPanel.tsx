@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, authUrl, post, traceUrl } from "../api";
+import { DISASTER } from "../featureFlags";
 import { useAuth } from "../auth";
 import { digitsFor, fmt, fmtInt, fmtSeconds, halfwidthPct, stopReasonLabel, unitFor } from "../format";
 import { AdvisoryView, EvidenceList, InputsList } from "./Evidence";
@@ -255,17 +256,18 @@ export function ResultPanel({ run, simulated = false, onMapOverlay }: { run: Run
             </button>
             <a className="btn" href={authUrl(`/api/queries/${run.id}/report.pdf?style=simple`)} download>Summary PDF (plain language)</a>
             <a className="btn" href={authUrl(`/api/queries/${run.id}/report.pdf`)} download>Technical PDF</a>
-            {!census && <button className="btn" disabled={!!busy} onClick={() => act("exhaustive", async () =>
+            {/* verification tools: hidden in the disaster edition (the endpoints stay available) */}
+            {!DISASTER && !census && <button className="btn" disabled={!!busy} onClick={() => act("exhaustive", async () =>
               setExhaustive(await post(`/api/queries/${run.id}/exhaustive`)))}>
               {busy === "exhaustive" ? "Analysing every tile…" : res.data_mode === "live" ? "Compare with every tile (slow)" : "Compare with every tile"}
             </button>}
-            <button className="btn" disabled={!!busy} onClick={() => act("replay", async () =>
+            {!DISASTER && <button className="btn" disabled={!!busy} onClick={() => act("replay", async () =>
               setReplay(await post(`/api/queries/${run.id}/replay`)))}>
               {busy === "replay" ? "Replaying…" : "Replay and verify"}
-            </button>
-            <a className="btn" href={traceUrl(run.id!)} download>Download execution trace</a>
+            </button>}
+            {!DISASTER && <a className="btn" href={traceUrl(run.id!)} download>Download execution trace</a>}
             <button className="btn" disabled={!!busy} onClick={exportEvidence}>Export map evidence (GeoJSON)</button>
-            <button className="btn" onClick={exportCsv}>Export analysed tiles (CSV)</button>
+            {!DISASTER && <button className="btn" onClick={exportCsv}>Export analysed tiles (CSV)</button>}
           </div>
           <form className="email-report" onSubmit={(ev) => { ev.preventDefault(); void emailReport(); }}>
             <input type="email" required placeholder="you@example.com" aria-label="Email address for the PDF report"

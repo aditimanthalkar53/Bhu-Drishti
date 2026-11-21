@@ -62,7 +62,8 @@ export function twinRoutes(app: FastifyInstance, store: Store, engine: EngineCli
 
   app.get<{ Querystring: { lat: string; lon: string; radius?: string } }>("/api/twins/osm", auth, async (req, reply) => {
     const qs = new URLSearchParams({ lat: String(Number(req.query.lat)), lon: String(Number(req.query.lon)), radius_m: String(Number(req.query.radius ?? 500)) });
-    try { return await engine.get(`/twins/osm?${qs}`); } catch (e) { return engineErr(reply, e); }
+    // the engine retries busy OpenStreetMap servers for up to about 160 s, so wait a little longer than that
+    try { return await engine.json(`/twins/osm?${qs}`, {}, 180_000); } catch (e) { return engineErr(reply, e); }
   });
 
   app.post<{ Body: { name: string; assetType: string; geometry: Record<string, unknown>; osmId?: string; attributes?: Record<string, string> } }>("/api/twins", {

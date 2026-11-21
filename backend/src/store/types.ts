@@ -47,7 +47,12 @@ export interface ApiKey {
 export type RecordKind =
   | "aoi" | "monitor" | "alert" | "report" | "recipient" | "group" | "delivery" | "webhook" | "notification" | "audit" | "detection" | "twin"
   | "reset"       // password-reset tokens (hash only, 30-minute expiry)
-  | "tokens";     // per-user "tokens issued before this instant are revoked"
+  | "tokens"      // per-user "tokens issued before this instant are revoked"
+  // disaster coordination (Maun)
+  | "profile"     // role, ward, language, skills (id = user id)
+  | "request" | "offer" | "update" | "task" | "match"
+  | "observation" // "please observe these cells more sharply" requests
+  | "maun_run";   // an estimation run: cells, waves, field-check results
 
 export interface StoredRecord {
   id: string;

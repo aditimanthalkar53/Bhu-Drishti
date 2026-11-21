@@ -27,6 +27,9 @@ POST /detections                     start a two-date change detection for a dis
 GET  /detections/{id}                progress steps, then the result (areas, polygons, evidence, risk)
 GET  /detections/{id}/overlays/{f}   PNG map overlay (before / after / change)
 DELETE /detections/{id}              remove a finished analysis and its files
+POST /hazard/grid                    combined hazard layer (FIRMS, IMERG, MODIS flood, GloFAS, rain forecast) per grid cell
+POST /maun/population                people per grid cell from the HRSL 30 m population raster
+POST /maun/compute                   Maun need estimate from a stored run record (deterministic replay)
 """
 
 from __future__ import annotations
@@ -521,3 +524,52 @@ def cache_stats():
 @app.post("/cache/clear")
 def cache_clear():
     return {"deleted": cache.clear()}
+
+
+# ---------------------------------------------------------------------------- disaster coordination (Maun)
+
+class HazardRequest(BaseModel):
+    bbox: list[float]
+    cell_deg: float = 0.05
+    days: int = 3
+
+
+@app.post("/hazard/grid")
+def hazard_grid(req: HazardRequest):
+    """Combined hazard layer for an area: every source's cells, its freshness, and one documented score per cell."""
+    from .hazard import hazard_grid as grid
+
+    if len(req.bbox) != 4:
+        raise HTTPException(422, "bbox must be [west, south, east, north]")
+    try:
+        return grid(req.bbox, req.cell_deg, max(1, min(req.days, 7)))
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+class CellsRequest(BaseModel):
+    cells: list[dict[str, Any]]
+
+
+@app.post("/maun/population")
+def maun_population(req: CellsRequest):
+    """People per cell from the HRSL 30 m raster (zonal sums); cells that could not be read are listed as missing."""
+    from .maun.population import cell_population
+
+    if not req.cells or len(req.cells) > 2500:
+        raise HTTPException(422, "send 1-2500 cells, each with id and bbox [west, south, east, north]")
+    try:
+        return cell_population([{"id": str(c["id"]), "bbox": [float(v) for v in c["bbox"]]} for c in req.cells])
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@app.post("/maun/compute")
+def maun_compute(spec: dict[str, Any]):
+    """Rebuild a Maun run from its record and return the estimate, range, strata, next wave and silent zones."""
+    from .maun import MaunSpecError, compute
+
+    try:
+        return compute(spec)
+    except (MaunSpecError, KeyError, TypeError, ValueError) as e:
+        raise HTTPException(422, str(e)) from e

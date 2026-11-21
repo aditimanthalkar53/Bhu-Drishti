@@ -130,14 +130,24 @@ def find_osm_assets(lat: float, lon: float, radius_m: float = 500.0, post=None, 
         except (OSError, ValueError):
             pass
 
-    def ask(queries: tuple[str, ...], limit: int) -> dict:
+    def ask(queries: tuple[str, ...], limit: int, budget_s: float) -> dict:
         query = "[out:json][timeout:25];(" + "".join(f"{q}{around};" for q in queries) + f");out geom {limit};"
-        return overpass_query(query, post) if post else overpass_query(query)
+        return overpass_query(query, post, budget_s=budget_s) if post else overpass_query(query, budget_s=budget_s)
 
+    # together within the website's 3-minute wait: the full search first, then the core structures only
     try:
-        payload = ask(ASSET_QUERIES, 400)
-    except Exception:  # noqa: BLE001 — overloaded servers answer 502/504; a smaller query often still gets through
-        return parse_osm_assets(ask(CORE_ASSET_QUERIES, 60).get("elements", []), (lat, lon))
+        payload = ask(ASSET_QUERIES, 400, 100.0)
+    except Exception:  # noqa: BLE001 — overloaded servers answer 429/502/504; a smaller query often still gets through
+        try:
+            return parse_osm_assets(ask(CORE_ASSET_QUERIES, 60, 60.0).get("elements", []), (lat, lon))
+        except Exception:
+            # every public server is busy: an older answer for this spot is better than nothing (OSM changes slowly)
+            if cache and cache.exists():
+                try:
+                    return json.loads(cache.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    pass
+            raise
     found = parse_osm_assets(payload.get("elements", []), (lat, lon))
     if cache and found:
         try:

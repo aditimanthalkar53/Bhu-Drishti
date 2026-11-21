@@ -24,6 +24,7 @@ export interface FeatureOptions {
   appUrl?: string;
   secret?: string;
   allowPrivateWebhooks: boolean;
+  featureMode?: "disaster" | "full";
 }
 
 export function featureRoutes(app: FastifyInstance, store: Store, engine: EngineClient, scheduler: MonitorScheduler, opts: FeatureOptions) {
@@ -534,7 +535,12 @@ export function featureRoutes(app: FastifyInstance, store: Store, engine: Engine
     return { ok: true };
   });
 
-  app.get("/api/audit", auth, async (req) => (await store.listRecords<AuditEntry>("audit", req.userId!)).slice(0, 500));
+  app.get("/api/audit", auth, async (req) => {
+    // authorities share one log: triage, approvals and deliveries are done by several people
+    const shared = (await app.roles.roleOfId(req.userId!)) === "authority";
+    const rows = await store.listRecords<AuditEntry>("audit", shared ? undefined : req.userId!);
+    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 500);
+  });
 
   // ------------------------------------------------------------------ history, dashboard, usage, settings
   app.get<{ Querystring: { region?: string; status?: string; source?: string } }>("/api/history", auth, async (req) => {

@@ -11,7 +11,8 @@
     "start": "node dist/index.js",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:email": "tsx --env-file-if-exists=../.env scripts/test-email.ts"
+    "test:email": "tsx --env-file-if-exists=../.env scripts/test-email.ts",
+    "seed:demo": "tsx --env-file-if-exists=../.env scripts/seed-demo.ts"
   },
   "engines": {
     "node": ">=20"
