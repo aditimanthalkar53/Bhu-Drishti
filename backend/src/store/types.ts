@@ -51,7 +51,8 @@ export type RecordKind =
   // disaster coordination (Maun)
   | "profile"     // role, ward, language, skills (id = user id)
   | "request" | "offer" | "update" | "task" | "match"
-  | "maun_run";   // an estimation run: cells, waves, field-check results
+  | "maun_run"    // an estimation run: cells, waves, field-check results
+  | "drain_key";  // Drain Watch unique keys (date + spot, date + photo hash) → the report that holds them
 
 export interface StoredRecord {
   id: string;

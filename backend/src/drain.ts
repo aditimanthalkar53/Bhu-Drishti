@@ -16,7 +16,10 @@ import { analysePhoto } from "./vision.js";
 /**
  * Drain Watch: a citizen photographs an open sewer, clogged or overflowing drain or waterlogging. Up to 3 photos,
  * metadata stripped, stored under <uploads>/drain/<request id>/ and served only to the reporter and authorities.
- * A one-page PDF is emailed to the ward authority (DRAIN_WARD_EMAILS for the reporter's ward, else DRAIN_AUTHORITY_EMAIL).
+ * Every report notifies the authorities in the app, and a one-page PDF is emailed to the ward authority (DRAIN_WARD_EMAILS
+ * for the reporter's ward, else DRAIN_AUTHORITY_EMAIL, else the authority accounts' own addresses).
+ * Unique keys: one report per spot per day (latitude/longitude rounded to 4 decimals, about 11 m) and one per photo per day
+ * (SHA-256 of the cleaned image). A report that hits either key stores no photos; it only counts as a confirmation.
  * A report within 30 m of an open one of the same category from the last 7 days is merged into it as "+1 confirmation".
  */
 export const DUPLICATE_RADIUS_M = 30;
@@ -34,6 +37,14 @@ const drainLimiter = new RateLimiter(10, 60 * 60_000);
 const analyseLimiter = new RateLimiter(20, 10 * 60_000);
 const SAFE_ID = /^req-[a-z0-9-]+$/;
 const SAFE_FILE = /^[a-z0-9-]+\.(jpg|png|webp)$/;
+// RFC 2606 / 6761 reserved names and the demo accounts' domain: mail to these can never be delivered
+const UNDELIVERABLE = /\.(demo|test|example|invalid|localhost)$/i;
+
+type DrainKey = { id: string; ownerId: string; requestId: string; createdAt: string };
+/** The calendar day in India, so "the same date" means what the citizen sees on their phone. */
+export const dayOf = (t = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(t);
+export const spotKey = (day: string, lat: number, lng: number) => `spot:${day}:${lat.toFixed(4)}:${lng.toFixed(4)}`;
+export const photoKey = (day: string, data: Buffer) => `photo:${day}:${createHash("sha256").update(data).digest("hex")}`;
 
 export interface DrainOptions { uploadsDir: string; appUrl: string; authorityEmail: string | null; wardEmails: Record<string, string> }
 
@@ -50,6 +61,18 @@ export function drainRoutes(app: FastifyInstance, store: Store, opts: DrainOptio
       names.push(name);
     }
     return names;
+  }
+
+  /** Who gets the emailed report: the ward's address, else DRAIN_AUTHORITY_EMAIL, else every authority account's own email. */
+  async function recipients(ward: string | null | undefined): Promise<string | null> {
+    const configured = (ward && opts.wardEmails[ward.toLowerCase()]) || opts.authorityEmail;
+    if (configured) return configured;
+    const emails = new Set<string>();
+    for (const id of await roles.authorityIds()) {
+      const e = (await store.userById(id))?.email?.trim().toLowerCase();
+      if (e && !UNDELIVERABLE.test(e)) emails.add(e);
+    }
+    return emails.size ? [...emails].join(", ") : null;
   }
 
   /** Suggest a category for one photo before the citizen sends it. */
@@ -86,6 +109,26 @@ export function drainRoutes(app: FastifyInstance, store: Store, opts: DrainOptio
       photos.push({ mime: c.mime, data: c.data });
     }
 
+    // unique keys: same spot or same photo on the same day → no new report and no photos stored
+    const day = dayOf();
+    const keys = [spotKey(day, b.lat, b.lng), ...photos.map((p) => photoKey(day, p.data))];
+    for (const k of keys) {
+      const hit = await store.getRecord<DrainKey>("drain_key", k);
+      const base = hit && await store.getRecord<HelpRequest>("request", hit.requestId);
+      if (!base?.drain) continue;
+      const reporters = new Set([base.ownerId, ...base.drain.confirmations.map((c) => c.by)]);
+      let cur = base;
+      if (!reporters.has(uid)) {   // another citizen: count the confirmation, keep no photos
+        cur = { ...base, updatedAt: now(), flags: [...new Set([...base.flags, "confirmed_by_others"])],
+          drain: { ...base.drain, confirmations: [...base.drain.confirmations, { at: now(), by: uid, photos: [] }] },
+          history: [...base.history, { at: now(), by: uid, action: "confirmed", detail: { duplicate: k.split(":")[0] } }] };
+        await store.putRecord("request", cur);
+      }
+      const reason = k.startsWith("spot:") ? "this spot was already reported today" : "this photo was already sent today";
+      return reply.code(200).send({ request: cur, merged: true, duplicate: true, reason, confirmations: cur.drain!.confirmations.length + 1 });
+    }
+    const claimKeys = (requestId: string) => Promise.all(keys.map((k) => store.putRecord<DrainKey>("drain_key", { id: k, ownerId: uid, requestId, createdAt: now() })));
+
     // category: the citizen's choice wins; otherwise the model's suggestion; otherwise ask the citizen
     // A local vision model can take minutes on a CPU. When the citizen has chosen the category, the report is saved at
     // once and the AI suggestion is added in the background; only without a category does the report wait for it.
@@ -114,13 +157,16 @@ export function drainRoutes(app: FastifyInstance, store: Store, opts: DrainOptio
         drain: { ...base.drain!, confirmations: [...base.drain!.confirmations, { at: now(), by: uid, photos: names }] },
         history: [...base.history, { at: now(), by: uid, action: "confirmed", detail: { photos: names.length } }] };
       await store.putRecord("request", next);
+      await claimKeys(base.id);
       await audit(store, uid, uid, "drain.confirm", `request:${base.id}`, { confirmations: n }, profile.displayName);
+      await notifyAuthorities(store, roles, `Drain Watch: ${LABEL[category]} confirmed again (${n + 1} reports)`,
+        `From ${profile.displayName} at ${b.lat.toFixed(5)}, ${b.lng.toFixed(5)}: added to the open report within ${DUPLICATE_RADIUS_M} m`, "info", `/app/requests?open=${base.id}`);
       return reply.code(200).send({ request: next, merged: true, confirmations: n + 1 });
     }
 
     const severity = (categorySource === "ai" && vision ? vision.severity : DEFAULT_SEVERITY[category]) as HelpRequest["severity"];
     const names = await savePhotos(id, photos, "p");
-    const to = (profile.ward && opts.wardEmails[profile.ward.toLowerCase()]) || opts.authorityEmail;
+    const to = await recipients(profile.ward);
     const r: HelpRequest = {
       id, ownerId: uid, createdAt: now(), type: category === "waterlogging" ? "waterlogging" : "drain_or_sewer",
       description: (b.description ?? "").trim().slice(0, 1000) || `${LABEL[category]} reported with Drain Watch`,
@@ -133,8 +179,10 @@ export function drainRoutes(app: FastifyInstance, store: Store, opts: DrainOptio
       history: [{ at: now(), by: uid, action: "created", detail: { source: "drain_watch", category } }],
     };
     await store.putRecord("request", r);
+    await claimKeys(id);
     await audit(store, uid, uid, "request.create", `request:${id}`, { source: "drain_watch", category, severity }, profile.displayName);
-    if (severity >= 3) await notifyAuthorities(store, roles, `Drain Watch: ${LABEL[category]}`, `${r.area ?? "location"} ${b.lat.toFixed(5)}, ${b.lng.toFixed(5)}`, "warning", `/app/requests?open=${id}`);
+    await notifyAuthorities(store, roles, `Drain Watch: ${LABEL[category]}`, `From ${profile.displayName} at ${r.area ?? "location"} ${b.lat.toFixed(5)}, ${b.lng.toFixed(5)}`,
+      severity >= 3 ? "warning" : "info", `/app/requests?open=${id}`);
     if (r.drain!.forwarded.status === "pending") void forward(r.id);
     if (b.category) void suggestLater(r.id, photos[0]);
     return reply.code(201).send({ request: r, merged: false });
@@ -199,8 +247,10 @@ export function drainRoutes(app: FastifyInstance, store: Store, opts: DrainOptio
   app.post<{ Params: { id: string } }>("/api/drain/:id/forward", guard(app, "authority"), async (req, reply) => {
     const r = await store.getRecord<HelpRequest>("request", req.params.id);
     if (!r?.drain) return reply.code(404).send({ error: "not found" });
-    if (!r.drain.forwarded.to) return reply.code(409).send({ error: "no ward authority email: set DRAIN_AUTHORITY_EMAIL or DRAIN_WARD_EMAILS" });
+    const to = r.drain.forwarded.to ?? await recipients(r.area);
+    if (!to) return reply.code(409).send({ error: "no authority email: set DRAIN_AUTHORITY_EMAIL, or give an authority account a real email address" });
     if (!smtpConfigured()) return reply.code(503).send({ error: "SMTP is not configured" });
+    if (!r.drain.forwarded.to) await store.putRecord("request", { ...r, drain: { ...r.drain, forwarded: { ...r.drain.forwarded, to } } });
     await forward(r.id);
     return store.getRecord("request", r.id);
   });

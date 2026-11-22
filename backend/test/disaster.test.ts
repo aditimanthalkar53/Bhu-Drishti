@@ -276,9 +276,9 @@ test("intake and vision fall back cleanly without a model, and validate model ou
 
 // ---------------------------------------------------------------- images, Drain Watch
 const seg = (marker: number, payload: Buffer) => Buffer.concat([Buffer.from([0xff, marker]), Buffer.from([(payload.length + 2) >> 8, (payload.length + 2) & 0xff]), payload]);
-function jpegWithExif() {
+function jpegWithExif(variant = 1) {   // a different variant is a different photo
   return Buffer.concat([Buffer.from([0xff, 0xd8]), seg(0xe0, Buffer.from("JFIF\0\x01\x01")), seg(0xe1, Buffer.from("Exif\0\0GPS 26.3N 91.0E SECRET-DEVICE")),
-    seg(0xfe, Buffer.from("comment by someone")), seg(0xdb, Buffer.alloc(10, 1)), Buffer.from([0xff, 0xda, 0x00, 0x04, 0x01, 0x02, 0x11, 0x22, 0x33]), Buffer.from([0xff, 0xd9])]);
+    seg(0xfe, Buffer.from("comment by someone")), seg(0xdb, Buffer.alloc(10, variant)), Buffer.from([0xff, 0xda, 0x00, 0x04, 0x01, 0x02, 0x11, 0x22, 0x33]), Buffer.from([0xff, 0xd9])]);
 }
 
 test("photos: the real type is sniffed and EXIF, comments and PNG text are removed", () => {
@@ -300,6 +300,7 @@ test("Drain Watch: stored without metadata, private, PDF, needs a category witho
   const s = await signup(app, "drain@x.example", { ward: "Ward 12" });
   const other = await signup(app, "nosy@x.example");
   const photo = `data:image/jpeg;base64,${jpegWithExif().toString("base64")}`;
+  const photoN = (n: number) => `data:image/jpeg;base64,${jpegWithExif(n).toString("base64")}`;
   const noCat = await app.inject({ method: "POST", url: "/api/drain", headers: s.h, payload: { photos: [photo], lat: 26.3, lng: 91.0 } });
   assert.equal(noCat.statusCode, 422, "no vision model: the citizen must choose the category");
   const r = await app.inject({ method: "POST", url: "/api/drain", headers: s.h, payload: { photos: [photo, photo], lat: 26.3, lng: 91.0, category: "open_sewer", clientId: "drain-client-1" } });
@@ -318,14 +319,64 @@ test("Drain Watch: stored without metadata, private, PDF, needs a category witho
   assert.equal(pdf.headers["content-type"], "application/pdf");
   assert.equal(pdf.rawPayload.subarray(0, 4).toString(), "%PDF");
   // 15 m away, same category, someone else: a +1 confirmation, not a new report
-  const dup = await app.inject({ method: "POST", url: "/api/drain", headers: other.h, payload: { photos: [photo], lat: 26.30013, lng: 91.0, category: "open_sewer" } });
+  const dup = await app.inject({ method: "POST", url: "/api/drain", headers: other.h, payload: { photos: [photoN(2)], lat: 26.30013, lng: 91.0, category: "open_sewer" } });
   assert.equal(dup.statusCode, 200);
   assert.equal(dup.json().merged, true);
   assert.equal(dup.json().request.id, req.id);
-  const diff = await app.inject({ method: "POST", url: "/api/drain", headers: other.h, payload: { photos: [photo], lat: 26.30013, lng: 91.0, category: "garbage_in_drain" } });
-  assert.equal(diff.json().merged, false, "a different category is a separate report");
+  assert.ok((await app.inject({ url: "/api/notifications", headers: A1 })).json().some((n: any) => n.title.includes("confirmed again (2 reports)")), "a merged report still alerts the authorities");
+  const diff = await app.inject({ method: "POST", url: "/api/drain", headers: other.h, payload: { photos: [photoN(3)], lat: 26.3003, lng: 91.0, category: "garbage_in_drain" } });
+  assert.equal(diff.json().merged, false, "a different category at a different spot is a separate report");
   const big = "A".repeat(11_400_000);
   assert.equal((await app.inject({ method: "POST", url: "/api/drain", headers: s.h, payload: { photos: [`data:image/jpeg;base64,${big}`], lat: 26.3, lng: 91.0, category: "other" } })).statusCode, 400);
+});
+
+test("Drain Watch unique keys: one report per spot per day and per photo per day; duplicates store no photos", async () => {
+  const a = await signup(app, "dupe-a@x.example"), b = await signup(app, "dupe-b@x.example"), c = await signup(app, "dupe-c@x.example");
+  const pic = (n: number) => `data:image/jpeg;base64,${jpegWithExif(n).toString("base64")}`;
+  const send = (s: { h: H }, n: number, lat: number, lng: number, category = "clogged_drain") =>
+    app.inject({ method: "POST", url: "/api/drain", headers: s.h, payload: { photos: [pic(n)], lat, lng, category } });
+  const first = await send(a, 40, 12.5, 77.5);
+  assert.equal(first.statusCode, 201, first.body);
+  const id = first.json().request.id;
+  const filesBefore = readdirSync(join(uploads, "drain", id)).length;
+
+  // same spot (to 4 decimals), same day, a different photo and category, another citizen: not a new report
+  const spot = await send(b, 41, 12.50002, 77.49998, "waterlogging");
+  assert.equal(spot.statusCode, 200, spot.body);
+  assert.equal(spot.json().duplicate, true);
+  assert.equal(spot.json().request.id, id);
+  assert.match(spot.json().reason, /spot/);
+  assert.equal(spot.json().confirmations, 2);
+  // the same photo sent from somewhere else: also a duplicate
+  const photo = await send(c, 40, 13.1, 77.9);
+  assert.equal(photo.json().duplicate, true);
+  assert.match(photo.json().reason, /photo/);
+  assert.equal(photo.json().confirmations, 3);
+  // the same citizen again: not counted twice
+  assert.equal((await send(a, 42, 12.5, 77.5)).json().confirmations, 3);
+  assert.equal(readdirSync(join(uploads, "drain", id)).length, filesBefore, "no duplicate photos stored");
+  // a different spot with a new photo today is a new report
+  const elsewhere = await send(b, 43, 12.6, 77.6);
+  assert.equal(elsewhere.statusCode, 201);
+});
+
+test("Drain Watch: every report alerts the authorities; without a drain address it is emailed to the authority accounts", async () => {
+  const port = (engine.server.address() as { port: number }).port;
+  const a = await buildApp(loadConfig({ ENGINE_URL: `http://127.0.0.1:${port}`, JWT_SECRET: "test", SQLITE_PATH: ":memory:", MONITOR_SCHEDULER: "false",
+    AUTHORITY_EMAILS: "chief@city.gov.in, control@maun.demo", UPLOADS_DIR: uploads } as any), { logger: false });
+  try {
+    const chief = await signup(a, "chief@city.gov.in");
+    await signup(a, "control@maun.demo");
+    const s = await signup(a, "drain2@city.gov.in");
+    const photo = `data:image/jpeg;base64,${jpegWithExif().toString("base64")}`;
+    const r = await a.inject({ method: "POST", url: "/api/drain", headers: s.h, payload: { photos: [photo], lat: 26.3, lng: 91.0, category: "other" } });
+    assert.equal(r.statusCode, 201, r.body);
+    assert.equal(r.json().request.drain.forwarded.to, "chief@city.gov.in", "authority accounts' emails, demo addresses skipped");
+    const notes = (await a.inject({ url: "/api/notifications", headers: chief.h })).json();
+    assert.ok(notes.some((n: any) => n.title === "Drain Watch: Other drainage problem" && n.body.includes("drain2")), "a low-severity report still alerts the authorities");
+  } finally {
+    await a.close();
+  }
 });
 
 // ---------------------------------------------------------------- Maun

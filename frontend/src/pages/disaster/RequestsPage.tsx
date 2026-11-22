@@ -12,7 +12,8 @@ export function RequestsPage() {
   const [params, setParams] = useSearchParams();
   const [status, setStatus] = useState("open");
   const [source, setSource] = useState("");
-  const reqs = useData<HelpRequest[]>(`/api/requests?sort=priority${source ? `&source=${source}` : ""}`, [source]);
+  const [sort, setSort] = useState<"priority" | "newest">("priority");
+  const reqs = useData<HelpRequest[]>(`/api/requests?sort=${sort}${source ? `&source=${source}` : ""}`, [source, sort]);
   const open = params.get("open");
   const list = (reqs.data ?? []).filter((r) => status === "all" || (status === "open" ? r.status !== "resolved" && r.status !== "cancelled" : r.status === status));
   const sel = (reqs.data ?? []).find((r) => r.id === open) ?? null;
@@ -27,6 +28,9 @@ export function RequestsPage() {
         </div>
         <select className="input" aria-label="Source" value={source} onChange={(e) => setSource(e.target.value)}>
           <option value="">All sources</option>{Object.entries(SOURCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <select className="input" aria-label="Order" value={sort} onChange={(e) => setSort(e.target.value as "priority" | "newest")}>
+          <option value="priority">Most urgent first</option><option value="newest">Newest first</option>
         </select>
       </div>
       <ErrorNote error={reqs.error} />
